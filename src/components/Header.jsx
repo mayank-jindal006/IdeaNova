@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useSystemData } from '../context/SystemDataContext';
@@ -7,6 +7,22 @@ export const Header = () => {
   const location = useLocation();
   const { user, switchRole } = useAuth();
   const { repositories } = useSystemData();
+
+  // Theme logic
+  const [theme, setTheme] = useState(localStorage.getItem('ideanova_theme') || 'dark');
+
+  useEffect(() => {
+    if (theme === 'light') {
+      document.body.classList.add('light-theme');
+    } else {
+      document.body.classList.remove('light-theme');
+    }
+    localStorage.setItem('ideanova_theme', theme);
+  }, [theme]);
+
+  const toggleTheme = () => {
+    setTheme(prev => prev === 'dark' ? 'light' : 'dark');
+  };
 
   // Find if any repository is currently scanning
   const isAnyScanning = repositories.some(r => r.scanningStatus === 'scanning');
@@ -44,6 +60,27 @@ export const Header = () => {
             <span>System Secure (Static Analysis Idle)</span>
           </div>
         )}
+
+        {/* Theme Switcher Button */}
+        <button 
+          onClick={toggleTheme}
+          style={{
+            background: 'rgba(255, 255, 255, 0.05)',
+            border: '1px solid var(--border-color)',
+            color: 'var(--text-primary)',
+            fontSize: '15px',
+            cursor: 'pointer',
+            padding: '5px 12px',
+            borderRadius: '8px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            transition: 'var(--transition-fast)',
+          }}
+          title={theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+        >
+          {theme === 'dark' ? '☀️' : '🌙'}
+        </button>
 
         {user && (
           <div className="role-quick-switcher">
