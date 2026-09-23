@@ -64,11 +64,14 @@ export const FindingDetail = () => {
     setIsFalsePositiveModalOpen(false);
   };
 
+  const lineNum = finding.line || finding.lineNumber;
+  const isRotationRequired = finding.rotationRequired ?? (finding.type === 'secret' || finding.status === 'needs_rotation');
+
   return (
     <div className="finding-detail-page">
       <Header
         title={finding.title}
-        subtitle={`${finding.ruleId} • ${finding.filePath}:${finding.lineNumber}`}
+        subtitle={`${finding.ruleId} • ${finding.filePath}${lineNum ? `:${lineNum}` : ''}`}
         breadcrumbs={[
           { label: 'Repositories', path: '/repositories' },
           { label: repo?.name || finding.repoId, path: `/repositories/${finding.repoId}` },
@@ -134,31 +137,31 @@ export const FindingDetail = () => {
                   <span className="attr-label">File Location</span>
                   <span className="attr-value text-mono">
                     <FileCodeIcon size={13} className="text-secondary" style={{ marginRight: '4px', verticalAlign: 'middle' }} />
-                    {finding.filePath}:{finding.lineNumber}
+                    {finding.filePath}{lineNum ? `:${lineNum}` : ''}
                   </span>
                 </div>
                 <div className="attr-item">
                   <span className="attr-label">Commit SHA</span>
                   <span className="attr-value text-mono text-secondary">
-                    {finding.commitSha || 'a1b2c3d4e5f'}
+                    {finding.commitSha ? finding.commitSha.slice(0, 10) : 'a1b2c3d4e5'}
                   </span>
                 </div>
                 <div className="attr-item">
                   <span className="attr-label">Git Tree Status</span>
-                  <span className={`attr-value ${finding.inGitHistory ? 'text-warning' : 'text-danger'}`}>
-                    {finding.inGitHistory ? 'Exposed in Commit History' : 'Exposed in Working Tree'}
+                  <span className={`attr-value ${finding.inHistoryOnly || finding.inGitHistory ? 'text-warning' : 'text-danger'}`}>
+                    {finding.inHistoryOnly || finding.inGitHistory ? 'Exposed in Commit History' : 'Exposed in Working Tree'}
                   </span>
                 </div>
                 <div className="attr-item">
                   <span className="attr-label">Detection Confidence</span>
                   <span className="attr-value">
-                    {finding.confidence === 'high' ? 'High (Deterministic pattern)' : 'Medium (Heuristic match)'}
+                    {finding.confidence >= 0.9 ? 'High (Deterministic pattern)' : 'Medium (Heuristic match)'}
                   </span>
                 </div>
                 <div className="attr-item">
                   <span className="attr-label">Rotation Required</span>
-                  <span className={`attr-value ${finding.rotationRequired ? 'text-danger font-bold' : 'text-secondary'}`}>
-                    {finding.rotationRequired ? 'Yes (Key invalidation required)' : 'No (Source patch sufficient)'}
+                  <span className={`attr-value ${isRotationRequired ? 'text-danger font-bold' : 'text-secondary'}`}>
+                    {isRotationRequired ? 'Yes (Key invalidation required)' : 'No (Source patch sufficient)'}
                   </span>
                 </div>
               </div>
@@ -282,8 +285,8 @@ export const FindingDetail = () => {
               </div>
             </div>
 
-            {/* Credential Rotation Section (Mandatory if secret) */}
-            {finding.rotationRequired && (
+            {/* Credential Rotation Section (Mandatory if secret or needs rotation) */}
+            {isRotationRequired && (
               <div className="panel-box rotation-section-box">
                 <RotationChecklist ruleId={finding.ruleId} />
               </div>
@@ -334,20 +337,20 @@ export const FindingDetail = () => {
 
             <div className="panel-box help-card">
               <h4 className="sidebar-card-title">Remediation Workflow</h4>
-              <ol className="remediation-steps-list">
+              <ul className="remediation-steps-list">
                 <li>
-                  <strong>1. Generate Patch:</strong> Review before/after code diff in Fix Review.
+                  <strong>Generate Patch:</strong> Review before/after code diff in Fix Review.
                 </li>
                 <li>
-                  <strong>2. Automated Validation:</strong> Verify that Gitleaks confirms zero tokens remain.
+                  <strong>Automated Validation:</strong> Verify that Gitleaks confirms zero tokens remain.
                 </li>
                 <li>
-                  <strong>3. Rotation Steps:</strong> Invalidate the exposed key with the credential provider.
+                  <strong>Rotation Steps:</strong> Invalidate the exposed key with the credential provider.
                 </li>
                 <li>
-                  <strong>4. Pull Request:</strong> Open automated GitHub PR for peer review.
+                  <strong>Pull Request:</strong> Open automated GitHub PR for peer review.
                 </li>
-              </ol>
+              </ul>
             </div>
           </div>
         </div>
