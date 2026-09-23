@@ -1,356 +1,525 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { useSearchParams, useNavigate } from 'react-router-dom';
-import { useSystemData } from '../context/SystemDataContext';
-import { useAuth } from '../context/AuthContext';
+import React, { useState, useMemo } from 'react';
+import { useParams, Link, useNavigate } from 'react-router-dom';
+import { useRepoGuard } from '../context/RepoGuardContext';
+import Header from '../components/Header';
+import SeverityBadge from '../components/SeverityBadge';
+import StatusChip from '../components/StatusChip';
+import RiskFactorBreakdown from '../components/RiskFactorBreakdown';
+import EmptyState from '../components/EmptyState';
+import {
+  RefreshCwIcon,
+  SearchIcon,
+  CheckCircleIcon,
+  ClockIcon
+} from '../components/icons';
+import {
+  calculateComplianceScore,
+  calculateHeuristicRisk,
+  getOWASPComplianceBreakdown
+} from '../services/repoGuardService';
 
-// Simple SVGs
-const BackIcon = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
-);
-const TerminalIcon = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
-);
-const GitMergeIcon = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 15V9a4 4 0 0 0-4-4H9"/><line x1="6" y1="9" x2="6" y2="15"/></svg>
-);
-const CheckIcon = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="20 6 9 17 4 12"/></svg>
-);
-
-export const RepositoryDetail = ({ repoId }) => {
+export const RepositoryDetail = () => {
+  const { repoId } = useParams();
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
-  const { user } = useAuth();
-  const { 
-    repositories, 
-    secrets, 
-    prs, 
-    scanLogs,
-    runSecurityScan, 
-    triggerAiFix, 
-    mergePr, 
-    markAsFalsePositive 
-  } = useSystemData();
+  const { repositories, findings, scans } = useRepoGuard();
 
-  // Find target repository
+  const [activeTab, setActiveTab] = useState('overview'); // 'overview' | 'findings' | 'scans' | 'compliance' | 'risk'
+
+  // Finding filters
+  const [filterType, setFilterType] = useState('');
+  const [filterSeverity, setFilterSeverity] = useState('');
+  const [filterStatus, setFilterStatus] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+
   const repo = repositories.find(r => r.id === repoId);
-  const repoSecrets = secrets.filter(s => s.repoId === repoId);
-  
-  // States
-  const [selectedSecretId, setSelectedSecretId] = useState('');
-  const consoleEndRef = useRef(null);
+  const repoFindings = useMemo(() => {
+    return findings.filter(f => f.repoId === repoId);
+  }, [findings, repoId]);
 
-  // Auto-select first secret if none is selected
-  useEffect(() => {
-    if (repoSecrets.length > 0 && !selectedSecretId) {
-      // Find first exposed or fixing secret, otherwise first resolved
-      const active = repoSecrets.find(s => s.status === 'exposed' || s.status === 'fixing');
-      if (active) {
-        setSelectedSecretId(active.id);
-      } else {
-        setSelectedSecretId(repoSecrets[0].id);
+  const repoScans = useMemo(() => {
+    return scans.filter(s => s.repoId === repoId);
+  }, [scans, repoId]);
+
+  // Filtered findings for the Findings tab (called unconditionally)
+  const filteredFindings = useMemo(() => {
+    return repoFindings.filter(f => {
+      if (filterType && f.type !== filterType) return false;
+      if (filterSeverity && f.severity !== filterSeverity) return false;
+      if (filterStatus && f.status !== filterStatus) return false;
+      if (searchQuery) {
+        const q = searchQuery.toLowerCase().trim();
+        const matches = (
+          f.title.toLowerCase().includes(q) ||
+          f.ruleId.toLowerCase().includes(q) ||
+          f.filePath.toLowerCase().includes(q) ||
+          (f.package && f.package.toLowerCase().includes(q))
+        );
+        if (!matches) return false;
       }
-    }
-  }, [repoSecrets, selectedSecretId]);
-
-  // Handle URL query parameters for PR reviews (from dashboard click)
-  useEffect(() => {
-    const queryPrId = searchParams.get('prId');
-    if (queryPrId) {
-      const targetPr = prs.find(p => p.id === queryPrId);
-      if (targetPr && targetPr.repoId === repoId) {
-        setSelectedSecretId(targetPr.issueId);
-      }
-    }
-  }, [searchParams, prs, repoId]);
-
-  // Scroll terminal logs to bottom
-  useEffect(() => {
-    if (consoleEndRef.current) {
-      consoleEndRef.current.scrollIntoView({ behavior: 'smooth' });
-    }
-  }, [scanLogs, repo?.scanningStatus]);
+      return true;
+    });
+  }, [repoFindings, filterType, filterSeverity, filterStatus, searchQuery]);
 
   if (!repo) {
-    return <div style={{ color: 'var(--color-danger)' }}>Repository not found.</div>;
+    return (
+      <div className="page-content-padded">
+        <EmptyState
+          title="Repository Not Found"
+          message={`The repository with ID "${repoId}" could not be located.`}
+          actionText="Back to Repositories"
+          onAction={() => navigate('/repositories')}
+        />
+      </div>
+    );
   }
 
-  const selectedSecret = repoSecrets.find(s => s.id === selectedSecretId);
-  const logs = scanLogs[repoId] || [];
-  
-  // Find linked open PR if state is fixing
-  const linkedPr = prs.find(p => p.issueId === selectedSecretId && p.status === 'open');
-
-  const handleScanTrigger = () => {
-    runSecurityScan(repoId);
-  };
-
-  const handleCreatePr = () => {
-    if (selectedSecret) {
-      triggerAiFix(selectedSecret.id);
-    }
-  };
-
-  const handleMergePr = () => {
-    if (linkedPr) {
-      mergePr(linkedPr.id);
-    }
-  };
-
-  const handleIgnore = () => {
-    if (selectedSecret) {
-      markAsFalsePositive(selectedSecret.id);
-    }
-  };
+  // Calculated metrics
+  const complianceScore = calculateComplianceScore(repoFindings);
+  const riskData = calculateHeuristicRisk(repo, repoFindings);
+  const openCount = repoFindings.filter(f => !['fixed', 'false_positive'].includes(f.status)).length;
+  const critCount = repoFindings.filter(f => f.severity === 'critical' && !['fixed', 'false_positive'].includes(f.status)).length;
+  const owaspControls = getOWASPComplianceBreakdown(repoFindings);
 
   return (
-    <div className="animate-fade-in">
-      {/* Detail Header */}
-      <div className="repo-header">
-        <div className="repo-title-wrapper">
-          <button 
-            className="btn-secondary" 
-            style={{ alignSelf: 'flex-start', padding: '5px 10px', fontSize: '11px', display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '10px' }}
-            onClick={() => navigate('/repositories')}
+    <div className="repository-detail-page">
+      <Header
+        title={repo.name}
+        subtitle={repo.fullName}
+        breadcrumbs={[
+          { label: 'Repositories', path: '/repositories' },
+          { label: repo.name }
+        ]}
+        actions={
+          <Link to={`/repositories/${repo.id}/scan`} className="btn-primary">
+            <RefreshCwIcon size={14} />
+            <span>Run Security Scan</span>
+          </Link>
+        }
+      />
+
+      <div className="page-content-padded">
+        {/* Repo Meta Overview Bar */}
+        <div className="repo-meta-bar">
+          <div className="meta-item">
+            <span className="meta-label">Default Branch:</span>
+            <span className="meta-value text-mono">{repo.defaultBranch}</span>
+          </div>
+          <div className="meta-item">
+            <span className="meta-label">Last Scanned:</span>
+            <span className="meta-value">
+              {repo.lastScannedAt ? new Date(repo.lastScannedAt).toLocaleString() : 'Never'}
+            </span>
+          </div>
+          <div className="meta-item">
+            <span className="meta-label">Primary Stack:</span>
+            <span className="meta-value font-medium">{repo.language}</span>
+          </div>
+          <div className="meta-item">
+            <span className="meta-label">Git Commits (90d):</span>
+            <span className="meta-value text-mono">{repo.signals?.commitCount90d || 0}</span>
+          </div>
+        </div>
+
+        {/* Top KPI Cards */}
+        <div className="kpi-grid">
+          <div className="kpi-card">
+            <span className="kpi-label">Compliance Index</span>
+            <span className={`kpi-value text-mono ${complianceScore >= 80 ? 'text-success' : complianceScore >= 50 ? 'text-warning' : 'text-danger'}`}>
+              {complianceScore}%
+            </span>
+            <span className="kpi-meta text-muted">OWASP & ASVS evaluated</span>
+          </div>
+
+          <div className="kpi-card">
+            <span className="kpi-label">Heuristic Risk Score</span>
+            <span className={`kpi-value text-mono ${riskData.score >= 60 ? 'text-danger' : riskData.score >= 30 ? 'text-warning' : 'text-success'}`}>
+              {riskData.score} <span className="text-sm text-muted">/ 100</span>
+            </span>
+            <span className="kpi-meta text-muted">Weighted signals</span>
+          </div>
+
+          <div className="kpi-card">
+            <span className="kpi-label">Open Findings</span>
+            <span className={`kpi-value text-mono ${openCount > 0 ? 'text-danger' : 'text-success'}`}>
+              {openCount}
+            </span>
+            <span className="kpi-meta text-muted">Unresolved exposures</span>
+          </div>
+
+          <div className="kpi-card">
+            <span className="kpi-label">Critical Vulnerabilities</span>
+            <span className={`kpi-value text-mono ${critCount > 0 ? 'text-danger' : 'text-muted'}`}>
+              {critCount}
+            </span>
+            <span className="kpi-meta text-muted">Immediate action required</span>
+          </div>
+        </div>
+
+        {/* Tab Navigation */}
+        <div className="tabs-bar">
+          <button
+            className={`tab-btn ${activeTab === 'overview' ? 'tab-btn-active' : ''}`}
+            onClick={() => setActiveTab('overview')}
           >
-            <BackIcon /> Back to Repositories
+            Overview
           </button>
-          <h3 style={{ fontSize: '24px', fontWeight: '800' }}>{repo.name}</h3>
-          <div className="repo-meta-list">
-            <span className="repo-meta-item">
-              Language: <strong style={{ color: 'var(--text-primary)' }}>{repo.language}</strong>
-            </span>
-            <span className="repo-meta-item">
-              Branch: <code style={{ background: 'rgba(255,255,255,0.05)', padding: '2px 6px', borderRadius: '4px' }}>{repo.branch}</code>
-            </span>
-            <span className="repo-meta-item">
-              Risk: <span className={`status-badge ${repo.riskLevel}`} style={{ padding: '2px 8px' }}>{repo.riskLevel.toUpperCase()}</span>
-            </span>
-          </div>
+          <button
+            className={`tab-btn ${activeTab === 'findings' ? 'tab-btn-active' : ''}`}
+            onClick={() => setActiveTab('findings')}
+          >
+            Findings <span className="tab-counter">{repoFindings.length}</span>
+          </button>
+          <button
+            className={`tab-btn ${activeTab === 'scans' ? 'tab-btn-active' : ''}`}
+            onClick={() => setActiveTab('scans')}
+          >
+            Scan History <span className="tab-counter">{repoScans.length}</span>
+          </button>
+          <button
+            className={`tab-btn ${activeTab === 'compliance' ? 'tab-btn-active' : ''}`}
+            onClick={() => setActiveTab('compliance')}
+          >
+            Compliance Posture
+          </button>
+          <button
+            className={`tab-btn ${activeTab === 'risk' ? 'tab-btn-active' : ''}`}
+            onClick={() => setActiveTab('risk')}
+          >
+            Heuristic Risk Breakdown
+          </button>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
-          <div className="repo-score-badge">
-            <span className="score-number">{repo.complianceScore}%</span>
-            <span className="score-label">Compliance<br/>Rating</span>
-          </div>
-          {user?.role !== 'CISO' && (
-            <button 
-              className="btn-primary" 
-              onClick={handleScanTrigger}
-              disabled={repo.scanningStatus === 'scanning'}
-            >
-              {repo.scanningStatus === 'scanning' ? 'Scanning...' : 'Trigger Scan'}
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* If scanning, show terminal simulator */}
-      {repo.scanningStatus === 'scanning' && (
-        <div className="glass-panel animate-fade-in" style={{ marginBottom: '25px' }}>
-          <div className="glass-panel-header" style={{ marginBottom: '10px' }}>
-            <span className="panel-title" style={{ color: 'var(--color-primary)' }}>
-              <TerminalIcon /> Static Analysis Execution Console
-            </span>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '15px', flex: '1', justifyContent: 'flex-end', paddingRight: '15px' }}>
-              <div className="progress-bar-container" style={{ margin: 0 }}>
-                <div className="progress-bar-fill" style={{ width: `${repo.scanProgress}%` }}></div>
-              </div>
-              <span style={{ fontSize: '12px', fontWeight: 'bold' }}>{repo.scanProgress}%</span>
-            </div>
-          </div>
-          <div className="console-view">
-            {logs.map((line, idx) => {
-              let lineClass = 'info';
-              if (line.includes('[WARN]')) lineClass = 'warn';
-              if (line.includes('[SUCCESS]')) lineClass = 'success';
-              return (
-                <div key={idx} className={`console-line ${lineClass}`}>
-                  {line}
+        {/* TAB 1: OVERVIEW */}
+        {activeTab === 'overview' && (
+          <div className="tab-content">
+            <div className="grid-2col">
+              {/* Left Column: Urgent Findings */}
+              <div className="card">
+                <div className="card-header">
+                  <h3 className="card-title">Active Security Findings</h3>
+                  <button className="btn-sm btn-secondary" onClick={() => setActiveTab('findings')}>
+                    View All ({repoFindings.length}) &rarr;
+                  </button>
                 </div>
-              );
-            })}
-            <div ref={consoleEndRef} />
-          </div>
-        </div>
-      )}
-
-      {/* Master Detail Split layout */}
-      <div className="detail-layout-grid">
-        {/* Left Column: Secrets exposed list */}
-        <div>
-          <h4 className="section-sub-title" style={{ marginTop: '0', marginBottom: '12px' }}>Secrets Scanning Findings</h4>
-          {repoSecrets.length === 0 ? (
-            <div className="glass-panel" style={{ padding: '30px', textAlign: 'center' }}>
-              <span className="status-badge safe" style={{ padding: '8px 16px', fontSize: '13px', marginBottom: '15px' }}>
-                No Leaked Credentials Found
-              </span>
-              <p style={{ color: 'var(--text-secondary)', fontSize: '12px' }}>
-                Run security scans to ingestion code histories and audit signatures.
-              </p>
-            </div>
-          ) : (
-            repoSecrets.map(sec => (
-              <div 
-                key={sec.id}
-                className={`finding-item-row ${selectedSecretId === sec.id ? 'selected' : ''}`}
-                onClick={() => setSelectedSecretId(sec.id)}
-              >
-                <div className="finding-header">
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <span className={`status-badge ${sec.severity}`}>
-                      {sec.severity.toUpperCase()}
-                    </span>
-                    <span className="finding-title">{sec.type}</span>
+                {repoFindings.filter(f => !['fixed', 'false_positive'].includes(f.status)).length === 0 ? (
+                  <EmptyState
+                    icon={CheckCircleIcon}
+                    title="No Open Findings"
+                    message="All detected credentials and dependency packages in this repository are secure or remediated."
+                  />
+                ) : (
+                  <div className="table-responsive">
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th>Severity</th>
+                          <th>Rule / Vulnerability</th>
+                          <th>Location</th>
+                          <th>Status</th>
+                          <th className="text-right">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {repoFindings
+                          .filter(f => !['fixed', 'false_positive'].includes(f.status))
+                          .slice(0, 5)
+                          .map((f) => (
+                            <tr key={f.id}>
+                              <td><SeverityBadge severity={f.severity} /></td>
+                              <td>
+                                <Link to={`/findings/${f.id}`} className="font-semibold text-mono text-link">
+                                  {f.ruleId}
+                                </Link>
+                              </td>
+                              <td className="text-mono text-xs">{f.filePath}{f.line ? `:${f.line}` : ''}</td>
+                              <td><StatusChip status={f.status} /></td>
+                              <td className="text-right">
+                                <Link to={`/findings/${f.id}/fix`} className="btn-sm btn-primary">
+                                  Fix &rarr;
+                                </Link>
+                              </td>
+                            </tr>
+                          ))}
+                      </tbody>
+                    </table>
                   </div>
-                  <span className="finding-file-path">{sec.filePath}</span>
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '6px' }}>
-                  <span className={`status-badge ${sec.status === 'exposed' ? 'critical' : sec.status === 'fixing' ? 'pending' : sec.status === 'resolved' ? 'resolved' : 'pending'}`} style={{ fontSize: '10px' }}>
-                    {sec.status === 'exposed' ? 'EXPOSED' : sec.status === 'fixing' ? 'FIX PENDING' : sec.status === 'resolved' ? 'SECURED' : 'FALSE POSITIVE'}
-                  </span>
-                  <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>{sec.dateFound}</span>
-                </div>
+                )}
               </div>
-            ))
-          )}
 
-          {/* Past Scan console dump summary */}
-          {logs.length > 0 && repo.scanningStatus === 'idle' && (
-            <div className="glass-panel" style={{ marginTop: '25px' }}>
-              <div className="glass-panel-header" style={{ marginBottom: '10px' }}>
-                <span className="panel-title" style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
-                  <TerminalIcon /> Last Audit Execution Logs
-                </span>
-                <button 
-                  className="preset-btn" 
-                  style={{ fontSize: '10px', padding: '3px 8px' }}
-                  onClick={() => navigate(`/repositories`)}
-                >
-                  Clear Logs
-                </button>
-              </div>
-              <div className="console-view" style={{ height: '140px', fontSize: '10px', padding: '10px' }}>
-                {logs.slice(-5).map((line, idx) => (
-                  <div key={idx} className="console-line info" style={{ color: 'var(--text-secondary)' }}>
-                    {line}
-                  </div>
-                ))}
+              {/* Right Column: Key Risk Factors */}
+              <div>
+                <RiskFactorBreakdown
+                  factors={riskData.factors}
+                  riskScore={riskData.score}
+                />
               </div>
             </div>
-          )}
-        </div>
+          </div>
+        )}
 
-        {/* Right Column: AI Remediation Wizard */}
-        <div>
-          <h4 className="section-sub-title" style={{ marginTop: '0', marginBottom: '12px' }}>AI Explain & Fix Wizard</h4>
-          {selectedSecret ? (
-            <div className="explain-fix-panel">
-              <div className="explain-fix-header">
+        {/* TAB 2: FINDINGS TABLE */}
+        {activeTab === 'findings' && (
+          <div className="tab-content">
+            <div className="card">
+              <div className="card-header findings-header">
                 <div>
-                  <h3 style={{ fontSize: '16px', fontWeight: '700' }}>{selectedSecret.type}</h3>
-                  <code style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>ID: {selectedSecret.id} | Hash: {selectedSecret.commitHash}</code>
+                  <h3 className="card-title">Repository Findings ({filteredFindings.length})</h3>
+                  <p className="card-subtitle">Detailed security findings discovered during automated code scanning.</p>
                 </div>
-                <span className={`status-badge ${selectedSecret.severity}`}>
-                  {selectedSecret.severity.toUpperCase()}
-                </span>
-              </div>
 
-              {selectedSecret.status === 'exposed' && (
-                <div className="risk-alert-box animate-fade-in">
-                  <div className="risk-alert-title">CRITICAL RISK FACTOR</div>
-                  <p style={{ fontSize: '12px', lineHeight: '1.4' }}>
-                    Credential committed in plaintext. Bots will scrape and compromise access within minutes.
-                  </p>
-                </div>
-              )}
-
-              {selectedSecret.status === 'fixing' && (
-                <div className="risk-alert-box animate-fade-in" style={{ background: 'rgba(0, 240, 255, 0.05)', borderColor: 'rgba(0,240,255,0.2)' }}>
-                  <div className="risk-alert-title" style={{ color: 'var(--color-primary)' }}>AUTO-FIX BRANCH GENERATED</div>
-                  <p style={{ fontSize: '12px', lineHeight: '1.4', color: 'var(--text-primary)' }}>
-                    Copilot has opened a pull request to move credentials to environment variables. Merge the PR below to secure the codebase.
-                  </p>
-                </div>
-              )}
-
-              {selectedSecret.status === 'resolved' && (
-                <div className="risk-alert-box animate-fade-in" style={{ background: 'rgba(57, 211, 83, 0.05)', borderColor: 'rgba(57,211,83,0.2)' }}>
-                  <div className="risk-alert-title" style={{ color: 'var(--color-success)' }}>VULNERABILITY RESOLVED</div>
-                  <p style={{ fontSize: '12px', lineHeight: '1.4', color: 'var(--text-primary)' }}>
-                    Hardcoded secret was scrubbed and configuration refactored to consume secret manager environment flags.
-                  </p>
-                </div>
-              )}
-
-              <h4 className="section-sub-title">AI Exposure Analysis</h4>
-              <p className="ai-explanation-text">
-                {selectedSecret.explanation}
-              </p>
-
-              <h4 className="section-sub-title">Proposed Remediated Patch ({selectedSecret.filePath})</h4>
-              <div className="diff-viewer">
-                {selectedSecret.diff.map((line, idx) => (
-                  <div key={idx} className={`diff-line ${line.type}`}>
-                    <span className="diff-line-num">{line.line}</span>
-                    <span>{line.content}</span>
+                {/* Filter Toolbar */}
+                <div className="findings-filter-bar">
+                  <div className="search-box-mini">
+                    <SearchIcon size={12} className="search-icon" />
+                    <input
+                      type="text"
+                      className="search-input-mini"
+                      placeholder="Filter by title, rule, path..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                    />
                   </div>
-                ))}
+
+                  <select
+                    className="filter-select"
+                    value={filterType}
+                    onChange={(e) => setFilterType(e.target.value)}
+                  >
+                    <option value="">All Types</option>
+                    <option value="secret">Secrets Only</option>
+                    <option value="dependency">Dependencies Only</option>
+                  </select>
+
+                  <select
+                    className="filter-select"
+                    value={filterSeverity}
+                    onChange={(e) => setFilterSeverity(e.target.value)}
+                  >
+                    <option value="">All Severities</option>
+                    <option value="critical">Critical</option>
+                    <option value="high">High</option>
+                    <option value="medium">Medium</option>
+                    <option value="low">Low</option>
+                  </select>
+
+                  <select
+                    className="filter-select"
+                    value={filterStatus}
+                    onChange={(e) => setFilterStatus(e.target.value)}
+                  >
+                    <option value="">All Statuses</option>
+                    <option value="open">Open</option>
+                    <option value="needs_rotation">Needs Rotation</option>
+                    <option value="fix_proposed">Fix Proposed</option>
+                    <option value="pr_opened">PR Opened</option>
+                    <option value="fixed">Fixed</option>
+                    <option value="false_positive">False Positive</option>
+                  </select>
+                </div>
               </div>
 
-              {/* Action Buttons depending on status */}
-              <div className="panel-action-footer">
-                {selectedSecret.status === 'exposed' && (
-                  <>
-                    {user?.role !== 'CISO' && (
-                      <button className="btn-primary" onClick={handleCreatePr}>
-                        AI Auto-Fix: Create PR
-                      </button>
-                    )}
-                    {user?.role === 'Security Engineer' && (
-                      <button className="btn-secondary" onClick={handleIgnore}>
-                        Ignore
-                      </button>
-                    )}
-                    <button className="btn-secondary" onClick={() => navigate('/settings')}>
-                      Rotate Credentials
-                    </button>
-                  </>
-                )}
+              {filteredFindings.length === 0 ? (
+                <EmptyState
+                  title="No findings match filter criteria"
+                  message="Try clearing your search query or adjusting the filters."
+                  actionText="Reset Filters"
+                  onAction={() => {
+                    setFilterType('');
+                    setFilterSeverity('');
+                    setFilterStatus('');
+                    setSearchQuery('');
+                  }}
+                />
+              ) : (
+                <div className="table-responsive">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>Severity</th>
+                        <th>Type</th>
+                        <th>Vulnerability / Rule ID</th>
+                        <th>Location</th>
+                        <th>Status</th>
+                        <th>Confidence</th>
+                        <th>OWASP Controls</th>
+                        <th className="text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredFindings.map((f) => (
+                        <tr key={f.id}>
+                          <td><SeverityBadge severity={f.severity} /></td>
+                          <td className="text-capitalize font-medium">{f.type}</td>
+                          <td>
+                            <Link to={`/findings/${f.id}`} className="font-semibold text-mono text-link">
+                              {f.ruleId}
+                            </Link>
+                            <div className="text-xs text-muted">{f.title}</div>
+                          </td>
+                          <td className="text-mono text-xs">{f.filePath}{f.line ? `:${f.line}` : ''}</td>
+                          <td><StatusChip status={f.status} /></td>
+                          <td className="text-mono text-xs font-semibold">{Math.round(f.confidence * 100)}%</td>
+                          <td>
+                            {f.owaspIds?.map(id => (
+                              <span key={id} className="badge-owasp">{id}</span>
+                            ))}
+                          </td>
+                          <td className="text-right table-actions-cell">
+                            <Link to={`/findings/${f.id}`} className="btn-sm btn-secondary mr-2">
+                              Inspect
+                            </Link>
+                            <Link to={`/findings/${f.id}/fix`} className="btn-sm btn-primary">
+                              Fix
+                            </Link>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
-                {selectedSecret.status === 'fixing' && (
-                  <>
-                    {user?.role !== 'CISO' && linkedPr && (
-                      <button className="btn-primary" onClick={handleMergePr} style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'linear-gradient(135deg, #2ea44f 0%, #22863a 100%)', color: '#fff', boxShadow: 'none' }}>
-                        <GitMergeIcon /> Merge Auto-Fix PR
-                      </button>
-                    )}
-                    <button className="btn-secondary" onClick={() => navigate('/settings')}>
-                      Configure Vault Rotation
-                    </button>
-                  </>
-                )}
+        {/* TAB 3: SCANS */}
+        {activeTab === 'scans' && (
+          <div className="tab-content">
+            <div className="card">
+              <div className="card-header">
+                <div>
+                  <h3 className="card-title">Scan History</h3>
+                  <p className="card-subtitle">Historical scan executions, discovered exposures, and run durations.</p>
+                </div>
+                <Link to={`/repositories/${repo.id}/scan`} className="btn-sm btn-primary">
+                  <RefreshCwIcon size={12} />
+                  <span>Execute New Scan</span>
+                </Link>
+              </div>
 
-                {selectedSecret.status === 'resolved' && (
-                  <span style={{ color: 'var(--color-success)', fontWeight: '700', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <CheckIcon /> Patched applied. Repository compliance score improved.
-                  </span>
-                )}
-                
-                {selectedSecret.status === 'false_positive' && (
-                  <span style={{ color: 'var(--text-secondary)', fontWeight: '600', fontSize: '13px' }}>
-                    Marked as Safe (Ignored). Scan exception active.
-                  </span>
-                )}
+              {repoScans.length === 0 ? (
+                <EmptyState
+                  icon={ClockIcon}
+                  title="No scan history recorded"
+                  message="This repository has not executed an automated security scan yet."
+                  actionText="Run First Scan"
+                  onAction={() => navigate(`/repositories/${repo.id}/scan`)}
+                />
+              ) : (
+                <div className="table-responsive">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>Scan ID</th>
+                        <th>Trigger</th>
+                        <th>Commit SHA</th>
+                        <th>Status</th>
+                        <th>Started At</th>
+                        <th>Duration</th>
+                        <th className="text-right">Findings Discovered</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {repoScans.map((s) => (
+                        <tr key={s.id}>
+                          <td className="font-semibold text-mono">{s.id}</td>
+                          <td className="text-capitalize">{s.trigger}</td>
+                          <td className="text-mono text-xs">{s.commitSha.slice(0, 10)}</td>
+                          <td>
+                            <span className="badge-success text-capitalize">{s.status}</span>
+                          </td>
+                          <td className="text-xs text-secondary">
+                            {new Date(s.startedAt).toLocaleString()}
+                          </td>
+                          <td className="text-mono text-xs">{s.durationSeconds}s</td>
+                          <td className="text-right font-bold text-mono">
+                            {s.findingsCount > 0 ? (
+                              <span className="text-danger">{s.findingsCount}</span>
+                            ) : (
+                              <span className="text-success">0</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* TAB 4: COMPLIANCE */}
+        {activeTab === 'compliance' && (
+          <div className="tab-content">
+            <div className="card">
+              <div className="card-header">
+                <div>
+                  <h3 className="card-title">OWASP Top 10 & ASVS Control Mapping</h3>
+                  <p className="card-subtitle">Automated evaluation against standardized industry security benchmarks.</p>
+                </div>
+                <div className="compliance-badge-large">
+                  Score: <strong className="text-success">{complianceScore}%</strong>
+                </div>
+              </div>
+
+              <div className="table-responsive">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Control ID</th>
+                      <th>Standard Control Name</th>
+                      <th>Description</th>
+                      <th>Status</th>
+                      <th className="text-right">Violations</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {owaspControls.map((ctrl) => (
+                      <tr key={ctrl.id}>
+                        <td className="font-semibold text-mono">{ctrl.id}</td>
+                        <td className="font-medium">{ctrl.name}</td>
+                        <td className="text-xs text-secondary">{ctrl.description}</td>
+                        <td>
+                          {ctrl.status === 'passing' ? (
+                            <span className="badge-success">Passing</span>
+                          ) : (
+                            <span className="badge-danger">Failing</span>
+                          )}
+                        </td>
+                        <td className="text-right">
+                          {ctrl.findingsCount > 0 ? (
+                            <button
+                              className="btn-sm btn-secondary text-danger"
+                              onClick={() => {
+                                setActiveTab('findings');
+                                setSearchQuery(ctrl.id);
+                              }}
+                            >
+                              {ctrl.findingsCount} Issue(s) &rarr;
+                            </button>
+                          ) : (
+                            <span className="text-muted text-xs">None</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             </div>
-          ) : (
-            <div className="glass-panel" style={{ padding: '30px', textAlign: 'center', color: 'var(--text-secondary)' }}>
-              Select a vulnerability finding to inspect the Exposure Analysis and run remediation scripts.
-            </div>
-          )}
-        </div>
+          </div>
+        )}
+
+        {/* TAB 5: RISK */}
+        {activeTab === 'risk' && (
+          <div className="tab-content">
+            <RiskFactorBreakdown
+              factors={riskData.factors}
+              riskScore={riskData.score}
+            />
+          </div>
+        )}
       </div>
     </div>
   );
