@@ -12,7 +12,7 @@ export const AuthProvider = ({ children }) => {
     if (savedUser) {
       try {
         setUser(JSON.parse(savedUser));
-      } catch (e) {
+      } catch {
         localStorage.removeItem('ideanova_session');
       }
     }

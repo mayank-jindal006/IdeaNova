@@ -10,14 +10,13 @@ const CloseIcon = () => (
 );
 
 export const Compliance = () => {
-  const { secrets, vulnerabilities, integrations, repositories } = useSystemData();
+  const { secrets, vulnerabilities, integrations } = useSystemData();
   const [showExportModal, setShowExportModal] = useState(false);
 
   // Dynamic checks based on active database state!
   const hasExposedSecrets = secrets.some(s => s.status === 'exposed' || s.status === 'fixing');
   const hasOutdatedLibs = vulnerabilities.some(v => v.severity === 'critical' || v.severity === 'high');
   const integrationsConfigured = integrations.every(i => i.status === 'configured');
-  const avgComplianceScore = Math.round(repositories.reduce((sum, r) => sum + r.complianceScore, 0) / repositories.length);
 
   // Mapped controls
   const categories = [
