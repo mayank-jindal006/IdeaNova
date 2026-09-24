@@ -1,0 +1,103 @@
+# RepoGuard — Contracts (Section 1)
+> Frozen on Day 1. Any change must go through the team group first.
+
+## 1.1 Database Tables
+repos(id, full_name, default_branch, created_at, last_scanned_at)
+
+scans(id, repo_id, trigger ENUM[manual,push,pull_request], commit_sha,
+      status ENUM[queued,running,done,failed], error, started_at, finished_at)
+
+findings(id, scan_id, repo_id, fingerprint UNIQUE per repo,
+         type ENUM[secret,dependency],
+         rule_id, title, severity ENUM[critical,high,medium,low],
+         file_path, line, commit_sha,
+         secret_masked, secret_hash,
+         package, ecosystem, installed_version, fixed_version,
+         in_history_only BOOLEAN,
+         confidence FLOAT 0..1,
+         status ENUM[open,fix_proposed,pr_opened,fixed,false_positive,needs_rotation],
+         owasp_ids TEXT[], asvs_ids TEXT[],
+         created_at, updated_at)
+
+fixes(id, finding_id, explanation JSONB, edits JSONB,
+      tier ENUM[auto_branch,pr_review,flag_only], validation JSONB,
+      pr_url, pr_number, status ENUM[generated,validation_failed,pr_opened,merged,rejected],
+      created_at)
+
+repo_scores(id, repo_id, scan_id, compliance_score INT 0..100,
+            control_results JSONB, risk_score INT 0..100,
+            risk_factors JSONB, computed_at)
+
+feedback(id, finding_id, verdict ENUM[true_positive,false_positive], note, created_at)
+
+## 1.2 Finding Object
+{
+  "id": 101, "repo_id": 1, "type": "secret", "rule_id": "aws-access-token",
+  "title": "AWS Access Key committed in source", "severity": "critical",
+  "file_path": "app/config.py", "line": 12, "commit_sha": "a1b2c3d",
+  "secret_masked": "AKIA****WXYZ", "package": null, "ecosystem": null,
+  "installed_version": null, "fixed_version": null, "in_history_only": false,
+  "confidence": 0.92, "status": "open",
+  "owasp_ids": ["A07:2021"], "asvs_ids": ["V6.4.1"]
+}
+Dependency finding: type="dependency", rule_id=OSV/CVE id, package/ecosystem/installed_version/fixed_version filled, secret_masked=null.
+
+## 1.3 Fix Object
+{
+  "finding_id": 101,
+  "explanation": {
+    "what": "An AWS access key is hardcoded in app/config.py.",
+    "why_dangerous": "Anyone with repo access, or anyone who ever clones it, can use this key...",
+    "how_fixed": "Moved to environment variable AWS_ACCESS_KEY_ID, added .env.example, ensured .env is gitignored.",
+    "rotation_required": true,
+    "rotation_note": "The key is still in git history. Deactivate it in AWS IAM and create a new one."
+  },
+  "edits": [
+    { "file_path": "app/config.py", "new_content": "<full new file content>" },
+    { "file_path": ".env.example", "new_content": "AWS_ACCESS_KEY_ID=\n" },
+    { "file_path": ".gitignore", "new_content": "<full content incl. .env>" }
+  ],
+  "tier": "pr_review",
+  "validation": { "secret_removed": true, "syntax_ok": true, "notes": [] }
+}
+Edits are full-file replacements, not diffs.
+
+## 1.4 REST API (base /api)
+GET /repos (Yash) — list of repo + latest scores
+POST /repos {full_name} (Yash) — add repo to track
+POST /repos/{id}/scan (Yash) — {scan_id, status}
+GET /repos/{id} (Yash) — repo + latest repo_scores row
+GET /repos/{id}/findings?type=&status=&severity= (Yash) — list of Finding
+GET /findings/{id} (Yash) — Finding + latest Fix + rotation checklist
+POST /findings/{id}/fix (Saina, route via Yash) — Fix object
+POST /fixes/{id}/open-pr (Yash) — {pr_url, pr_number}
+POST /findings/{id}/feedback {verdict, note} (Saina) — updated Finding
+GET /dashboard/summary (Yash + Rishika) — totals, severity counts, per-repo scores, 7-day trend
+GET /scans/{id} (Yash) — scan status (frontend polls every 2s)
+POST /webhooks/github (Yash) — 200; verifies X-Hub-Signature-256
+
+Error shape (all endpoints): {"error": {"code": "SCAN_FAILED", "message": "..."}}
+
+## 1.5 Module Function Signatures
+# scanners/secrets.py (Yash)
+def scan_secrets(repo_path: str, include_history: bool = True) -> list[dict]
+
+# scanners/deps.py (Yash)
+def scan_dependencies(repo_path: str) -> list[dict]
+
+# compliance/score.py (Rishika)
+def map_controls(finding: dict) -> tuple[list[str], list[str]]
+def compute_compliance(findings: list[dict]) -> dict
+
+# risk/heuristic.py (Rishika)
+def compute_risk(repo_signals: dict, findings: list[dict]) -> dict
+
+# ai/explain.py, ai/fix.py (Saina)
+def generate_fix(finding: dict, file_content: str, repo_files: list[str]) -> dict
+
+# ai/tiers.py (Saina)
+def assign_tier(finding: dict, fix: dict) -> str
+
+repo_signals fields: commit_count_90d, contributor_count, env_file_tracked (bool),
+gitignore_has_env (bool), has_precommit_secret_hook (bool), historical_secret_count,
+days_since_last_commit.
