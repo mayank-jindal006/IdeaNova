@@ -1,0 +1,33 @@
+# RepoGuard backend — Python 3.14
+# Install: pip install -r requirements.txt
+
+# API server
+fastapi==0.141.1
+uvicorn[standard]==0.53.0
+
+# Database (PostgreSQL)
+sqlalchemy==2.0.54
+psycopg[binary]==3.3.6
+
+# Settings / config
+pydantic==2.13.5
+pydantic-settings==2.15.0
+python-dotenv==1.2.3
+
+# GitHub integration (clone info, branches, PRs)
+PyGithub==2.10.0
+
+# HTTP calls (OSV API)
+httpx==0.28.1
+
+# Compliance mapping + rotation checklists (.yaml files)
+PyYAML==6.0.3
+
+# Tests
+pytest==9.1.1
+
+# LLM main: Groq (openai/gpt-oss-120b) via the OpenAI-compatible API
+openai==3.17.0
+
+# LLM fallback: Gemini (gemini-3.6-flash)
+google-genai==2.24.0
