@@ -58,6 +58,7 @@ class ScanOut(BaseModel):
 
 
 class FixOut(BaseModel):
+    id: int | None = None
     finding_id: int
     explanation: dict
     edits: list[dict]

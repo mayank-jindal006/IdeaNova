@@ -137,6 +137,8 @@ def generate_fix(finding_id: int, db: Session = Depends(get_db)):
         db.add(fix)
         finding.status = FindingStatus.fix_proposed
         db.commit()
+        db.refresh(fix)
+        generated["id"] = fix.id
         return generated
     except APIError:
         raise

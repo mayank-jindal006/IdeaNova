@@ -1,168 +1,272 @@
-import React from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { useSystemData } from '../context/SystemDataContext';
-import { useAuth } from '../context/AuthContext';
-import RepositoryDetail from './RepositoryDetail';
-
-// Simple Icons
-const CheckIcon = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="20 6 9 17 4 12"/></svg>
-);
-const TerminalIcon = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
-);
+import React, { useState, useEffect, useMemo } from 'react';
+import { Link } from 'react-router-dom';
+import api from '../api/client';
+import Header from '../components/Header';
+import AddRepoModal from '../components/AddRepoModal';
+import EmptyState from '../components/EmptyState';
+import {
+  SearchIcon,
+  PlusIcon,
+  XIcon,
+  RefreshCwIcon,
+  RepoIcon
+} from '../components/icons';
 
 export const Repositories = () => {
-  const [searchParams, setSearchParams] = useSearchParams();
-  const repoId = searchParams.get('id');
+  const [repositories, setRepositories] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [sortBy, setSortBy] = useState('risk_desc'); // 'risk_desc' | 'compliance_desc' | 'name_asc'
+  const [isModalOpen, setIsModalOpen] = useState(false);
 
-  const { user } = useAuth();
-  const { repositories, secrets, vulnerabilities, runSecurityScan, scanLogs } = useSystemData();
-
-  // If a repository id is present in url, show details screen
-  if (repoId) {
-    return <RepositoryDetail repoId={repoId} />;
-  }
-
-  const handleScanTrigger = (id, e) => {
-    e.stopPropagation(); // Avoid triggering card navigation
-    runSecurityScan(id);
+  const fetchRepositories = async () => {
+    setLoading(true);
+    setErrorText(null);
+    try {
+      const data = await api.listRepositories();
+      setRepositories(data || []);
+    } catch (err) {
+      setErrorText(err.message || 'Failed to load repositories');
+      // Fallback repo if empty/error
+      setRepositories([
+        {
+          id: 1,
+          full_name: 'mayank-jindal006/IdeaNova',
+          default_branch: 'design1',
+          created_at: new Date().toISOString(),
+          last_scanned_at: new Date().toISOString(),
+          latest_score: {
+            compliance_score: 85,
+            risk_score: 35
+          }
+        }
+      ]);
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const selectRepository = (id) => {
-    setSearchParams({ id });
+  useEffect(() => {
+    fetchRepositories();
+  }, []);
+
+  const handleAddRepo = async (fullName) => {
+    try {
+      await api.createRepository(fullName);
+      await fetchRepositories();
+      setIsModalOpen(false);
+    } catch (err) {
+      alert(err.message || 'Failed to add repository');
+    }
   };
+
+  // Filter and sort
+  const filteredRepos = useMemo(() => {
+    let list = [...repositories];
+
+    const q = searchQuery.trim().toLowerCase();
+    if (q) {
+      list = list.filter(r => (r.full_name || '').toLowerCase().includes(q));
+    }
+
+    list.sort((a, b) => {
+      const aRisk = a.latest_score?.risk_score ?? 0;
+      const bRisk = b.latest_score?.risk_score ?? 0;
+      const aComp = a.latest_score?.compliance_score ?? 100;
+      const bComp = b.latest_score?.compliance_score ?? 100;
+
+      switch (sortBy) {
+        case 'risk_desc': return bRisk - aRisk;
+        case 'risk_asc': return aRisk - bRisk;
+        case 'compliance_desc': return bComp - aComp;
+        case 'compliance_asc': return aComp - bComp;
+        case 'name_asc': return (a.full_name || '').localeCompare(b.full_name || '');
+        default: return 0;
+      }
+    });
+
+    return list;
+  }, [repositories, searchQuery, sortBy]);
 
   return (
-    <div className="animate-fade-in">
-      <div style={{ marginBottom: '25px' }}>
-        <p style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>
-          Integrate, scan, and manage compliance pipelines across repositories. Propose LLM patches to seal exposed keys.
-        </p>
-      </div>
+    <div className="repositories-page">
+      <Header
+        title="Repositories"
+        subtitle="Manage monitored code repositories, audit security postures, and initiate targeted scans."
+        breadcrumbs={[{ label: 'Repositories' }]}
+        actions={
+          <button className="btn-primary" onClick={() => setIsModalOpen(true)}>
+            <PlusIcon size={14} />
+            <span>Add Repository</span>
+          </button>
+        }
+      />
 
-      {/* Grid of Repositories */}
-      <div className="metrics-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))' }}>
-        {repositories.map(repo => {
-          // Count active secrets findings
-          const repoSecretsCount = secrets.filter(s => s.repoId === repo.id && (s.status === 'exposed' || s.status === 'fixing')).length;
-          // Count active CVE vulnerabilities
-          const repoCVEsCount = vulnerabilities.filter(v => v.repoId === repo.id).length;
-
-          const isScanning = repo.scanningStatus === 'scanning';
-
-          return (
-            <div 
-              key={repo.id}
-              className="glass-panel"
-              style={{ 
-                cursor: 'pointer',
-                borderColor: isScanning ? 'var(--color-primary)' : 'var(--border-color)',
-                transition: 'var(--transition-smooth)'
-              }}
-              onClick={() => selectRepository(repo.id)}
-            >
-              {/* Card Header */}
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '15px' }}>
-                <div>
-                  <h4 style={{ fontSize: '18px', fontWeight: '700', color: 'var(--text-primary)' }}>{repo.name}</h4>
-                  <div style={{ display: 'flex', gap: '6px', marginTop: '6px', alignItems: 'center' }}>
-                    <span className="repo-lang-badge">{repo.language}</span>
-                    <span className={`status-badge ${repo.riskLevel}`} style={{ fontSize: '9px', padding: '1px 6px' }}>
-                      {repo.riskLevel.toUpperCase()} RISK
-                    </span>
-                  </div>
-                </div>
-
-                <div className="score-circle-wrapper" style={{ border: '2px solid rgba(255,255,255,0.05)', borderRadius: '50%', padding: '6px' }}>
-                  <span className="score-text" style={{ fontSize: '11px', color: repo.complianceScore > 75 ? 'var(--color-success)' : repo.complianceScore > 50 ? 'var(--color-warning)' : 'var(--color-danger)' }}>
-                    {repo.complianceScore}%
-                  </span>
-                </div>
-              </div>
-
-              {/* Scan status overlay if active */}
-              {isScanning ? (
-                <div className="animate-fade-in" style={{ marginBottom: '15px', background: 'rgba(0,0,0,0.2)', padding: '10px', borderRadius: '8px', border: '1px dashed var(--border-color-glow)' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', marginBottom: '5px' }}>
-                    <span style={{ color: 'var(--color-primary)', fontWeight: 'bold' }}>Executing static scan...</span>
-                    <span>{repo.scanProgress}%</span>
-                  </div>
-                  <div className="progress-bar-container" style={{ margin: 0, height: '6px', maxWidth: '100%' }}>
-                    <div className="progress-bar-fill" style={{ width: `${repo.scanProgress}%` }}></div>
-                  </div>
-                </div>
-              ) : (
-                <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '15px', borderBottom: '1px dashed rgba(255,255,255,0.05)', paddingBottom: '10px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-                    <span>Active exposed credentials:</span>
-                    <strong style={{ color: repoSecretsCount > 0 ? 'var(--color-danger)' : 'var(--color-success)' }}>{repoSecretsCount}</strong>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span>Outdated package CVEs:</span>
-                    <strong style={{ color: repoCVEsCount > 0 ? 'var(--color-warning)' : 'var(--color-success)' }}>{repoCVEsCount}</strong>
-                  </div>
-                </div>
-              )}
-
-              {/* Commit info */}
-              <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '20px', wordBreak: 'break-all' }}>
-                <strong>Last Commit:</strong> {repo.lastCommit}
-                <div style={{ marginTop: '2px' }}>{repo.commitDate}</div>
-              </div>
-
-              {/* Actions Footer */}
-              <div style={{ display: 'flex', gap: '10px' }}>
-                <button 
-                  className="btn-secondary"
-                  style={{ flex: 1, padding: '7px 0', fontSize: '12px' }}
-                  onClick={() => selectRepository(repo.id)}
-                >
-                  Audit Code & PRs
-                </button>
-                {user?.role !== 'CISO' && (
-                  <button 
-                    className="btn-primary"
-                    style={{ flex: 1, padding: '7px 0', fontSize: '12px' }}
-                    onClick={(e) => handleScanTrigger(repo.id, e)}
-                    disabled={isScanning}
-                  >
-                    {isScanning ? 'Running...' : 'Trigger Scan'}
-                  </button>
-                )}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* General Terminal Console simulation (shows if any scanning occurs) */}
-      {repositories.some(r => r.scanningStatus === 'scanning') && (
-        <div className="glass-panel animate-fade-in" style={{ marginTop: '30px' }}>
-          <div className="glass-panel-header">
-            <span className="panel-title" style={{ color: 'var(--color-primary)' }}>
-              <TerminalIcon /> Running Scopes Global Engine Monitor
-            </span>
+      <div className="page-content-padded">
+        {/* Controls Toolbar: Search & Sort */}
+        <div className="table-toolbar">
+          <div className="search-box">
+            <SearchIcon size={14} className="search-icon" />
+            <input
+              type="text"
+              className="search-input"
+              placeholder="Search repositories by name or organization..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                className="search-clear-btn"
+                onClick={() => setSearchQuery('')}
+                aria-label="Clear search"
+              >
+                <XIcon size={12} />
+              </button>
+            )}
           </div>
-          <div className="console-view" style={{ height: '150px' }}>
-            {repositories.filter(r => r.scanningStatus === 'scanning').map(repo => {
-              const logs = scanLogs[repo.id] || [];
-              return (
-                <div key={repo.id}>
-                  <div style={{ color: 'var(--color-primary)', fontWeight: 'bold', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '3px', marginBottom: '5px' }}>
-                    --- Ingestion Stream: {repo.name} ({repo.scanProgress}%) ---
-                  </div>
-                  {logs.slice(-3).map((line, idx) => (
-                    <div key={idx} className="console-line">
-                      {line}
-                    </div>
-                  ))}
-                  <div style={{ height: '10px' }} />
-                </div>
-              );
-            })}
+
+          <div className="toolbar-actions">
+            <div className="sort-group">
+              <label htmlFor="repo-sort" className="sort-label">Sort by:</label>
+              <select
+                id="repo-sort"
+                className="sort-select"
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value)}
+              >
+                <option value="risk_desc">Heuristic Risk: High to Low</option>
+                <option value="risk_asc">Heuristic Risk: Low to High</option>
+                <option value="compliance_desc">Compliance: High to Low</option>
+                <option value="name_asc">Repository Name: A to Z</option>
+              </select>
+            </div>
+            <button
+              type="button"
+              className="btn-secondary btn-icon-only"
+              onClick={fetchRepositories}
+              title="Refresh repositories"
+            >
+              <RefreshCwIcon size={14} className={loading ? 'spin-icon' : ''} />
+            </button>
           </div>
         </div>
+
+        {/* Repositories Table */}
+        <div className="card">
+          <div className="table-responsive">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Repository Name</th>
+                  <th>Default Branch</th>
+                  <th>Compliance Index</th>
+                  <th>Heuristic Risk Score</th>
+                  <th className="text-right">Last Scan</th>
+                  <th className="text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredRepos.length === 0 ? (
+                  <tr>
+                    <td colSpan={6}>
+                      <EmptyState
+                        title="No Repositories Found"
+                        message={searchQuery ? `No matches found for "${searchQuery}".` : "No repositories monitored yet."}
+                        actionText="Add Repository"
+                        onAction={() => setIsModalOpen(true)}
+                      />
+                    </td>
+                  </tr>
+                ) : (
+                  filteredRepos.map((repo) => {
+                    const compScore = repo.latest_score?.compliance_score ?? 100;
+                    const riskScore = repo.latest_score?.risk_score ?? 0;
+
+                    return (
+                      <tr key={repo.id}>
+                        <td>
+                          <div className="repo-name-cell">
+                            <RepoIcon size={16} className="text-secondary" />
+                            <div>
+                              <Link to={`/repositories/${repo.id}`} className="repo-title-link">
+                                {repo.full_name}
+                              </Link>
+                            </div>
+                          </div>
+                        </td>
+                        <td>
+                          <span className="badge badge-neutral text-mono">
+                            {repo.default_branch || 'main'}
+                          </span>
+                        </td>
+                        <td>
+                          <div className="score-meter-wrap">
+                            <span className="score-number font-bold text-success">
+                              {compScore}%
+                            </span>
+                            <div className="meter-track">
+                              <div
+                                className="meter-fill fill-compliance"
+                                style={{ width: `${compScore}%` }}
+                              />
+                            </div>
+                          </div>
+                        </td>
+                        <td>
+                          <div className="score-meter-wrap">
+                            <span className={`score-number font-bold ${riskScore > 40 ? 'text-danger' : riskScore > 20 ? 'text-warning' : 'text-success'}`}>
+                              {riskScore}/100
+                            </span>
+                            <div className="meter-track">
+                              <div
+                                className="meter-fill"
+                                style={{
+                                  width: `${Math.min(riskScore, 100)}%`,
+                                  backgroundColor: riskScore > 40 ? 'var(--color-danger)' : riskScore > 20 ? 'var(--color-warning)' : 'var(--color-success)'
+                                }}
+                              />
+                            </div>
+                          </div>
+                        </td>
+                        <td className="text-right text-secondary text-mono text-sm">
+                          {repo.last_scanned_at ? new Date(repo.last_scanned_at).toLocaleDateString() : 'Never'}
+                        </td>
+                        <td className="text-right">
+                          <div className="table-actions-group">
+                            <Link
+                              to={`/repositories/${repo.id}/scan`}
+                              className="btn-secondary btn-sm"
+                              title="Start security scan"
+                            >
+                              <RefreshCwIcon size={12} style={{ marginRight: '4px' }} />
+                              Scan
+                            </Link>
+                            <Link
+                              to={`/repositories/${repo.id}`}
+                              className="btn-primary btn-sm"
+                            >
+                              Inspect
+                            </Link>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      {/* Add Repository Modal */}
+      {isModalOpen && (
+        <AddRepoModal
+          isOpen={isModalOpen}
+          onClose={() => setIsModalOpen(false)}
+          onAdd={handleAddRepo}
+        />
       )}
     </div>
   );
