@@ -1,9 +1,83 @@
-import React, { createContext, useState, useContext } from 'react';
+import React, { createContext, useState, useContext, useEffect } from 'react';
+import { api } from '../api/client';
 
 const SystemDataContext = createContext(null);
 
 // Helper to simulate sleep
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+const toRepository = (repo, score) => {
+  const riskScore = score?.risk_score ?? repo.latest_score?.risk_score ?? 0;
+  return {
+    id: String(repo.id),
+    name: repo.full_name,
+    language: 'Unknown',
+    branch: repo.default_branch,
+    complianceScore: repo.latest_score?.compliance_score ?? score?.compliance_score ?? 0,
+    leakProbability: riskScore,
+    riskLevel: riskScore >= 75 ? 'critical' : riskScore >= 50 ? 'high' : riskScore >= 25 ? 'medium' : 'low',
+    lastCommit: 'Commit details unavailable',
+    commitDate: repo.last_scanned_at ? new Date(repo.last_scanned_at).toLocaleString() : 'Not scanned',
+    scanningStatus: 'idle',
+    scanProgress: 0,
+    factors: score?.risk_factors?.map(factor => factor.name) ?? []
+  };
+};
+
+const toFinding = (finding) => {
+  const status = {
+    open: 'exposed',
+    fix_proposed: 'fixing',
+    pr_opened: 'fixing',
+    fixed: 'resolved',
+    false_positive: 'false_positive',
+    needs_rotation: 'exposed'
+  }[finding.status] || finding.status;
+
+  if (finding.type === 'secret') {
+    return {
+      id: String(finding.id),
+      repoId: String(finding.repo_id),
+      type: finding.title,
+      severity: finding.severity,
+      status,
+      filePath: finding.file_path,
+      commitHash: finding.commit_sha || 'Not available',
+      dateFound: 'Detected by scan',
+      explanation: `Secret finding ${finding.rule_id}${finding.secret_masked ? ` (${finding.secret_masked})` : ''}`,
+      diff: []
+    };
+  }
+
+  return {
+    id: String(finding.id),
+    repoId: String(finding.repo_id),
+    packageName: finding.package || finding.title,
+    currentVersion: finding.installed_version || 'Unknown',
+    safeVersion: finding.fixed_version || 'Unknown',
+    cveId: finding.rule_id,
+    severity: finding.severity,
+    description: finding.title,
+    remediation: finding.fixed_version ? `Upgrade to ${finding.fixed_version}.` : 'Review the package advisory.'
+  };
+};
+
+const fetchSystemData = async () => {
+  const [repos, dashboardSummary] = await Promise.all([
+    api.listRepositories(),
+    api.getDashboardSummary()
+  ]);
+  const findingsByRepo = await Promise.all(repos.map(repo => api.getRepositoryFindings(repo.id)));
+  const scores = new Map((dashboardSummary.repo_scores || []).map(score => [score.repo_id, score]));
+  const findings = findingsByRepo.flat();
+
+  return {
+    repositories: repos.map(repo => toRepository(repo, scores.get(repo.id))),
+    secrets: findings.filter(finding => finding.type === 'secret').map(toFinding),
+    vulnerabilities: findings.filter(finding => finding.type === 'dependency').map(toFinding),
+    dashboardSummary
+  };
+};
 
 export const SystemDataProvider = ({ children }) => {
   // 1. Initial Repositories Mock Data
@@ -254,75 +328,58 @@ export const SystemDataProvider = ({ children }) => {
 
   // 6. Scan Simulation Logs Storage
   const [scanLogs, setScanLogs] = useState({});
+  const [dashboardSummary, setDashboardSummary] = useState(null);
+
+  useEffect(() => {
+    let active = true;
+    fetchSystemData().then(data => {
+      if (!active) return;
+      setRepositories(data.repositories);
+      setSecrets(data.secrets);
+      setVulnerabilities(data.vulnerabilities);
+      setDashboardSummary(data.dashboardSummary);
+    }).catch(error => {
+      console.error('Unable to load RepoGuard API data:', error);
+      if (!active) return;
+      setRepositories([]);
+      setSecrets([]);
+      setVulnerabilities([]);
+      setDashboardSummary(null);
+    });
+    return () => { active = false; };
+  }, []);
 
   // ------------------------------------------
   // CORE FUNCTIONS
   // ------------------------------------------
 
-  // Run a simulated repo security scan
+  // Run a backend scan and poll until the scan reaches a terminal status.
   const runSecurityScan = async (repoId) => {
-    // 1. Update repo status to scanning
     setRepositories(prev => prev.map(r => r.id === repoId ? { ...r, scanningStatus: 'scanning', scanProgress: 5 } : r));
-    
-    // Set initial logs
-    let currentLogs = [
-      `[INFO] Starting RepoGuard Scanner v1.4.2 on repo: ${repositories.find(r => r.id === repoId).name}...`,
-      `[INFO] Ingesting commit history on branch: master...`,
-      `[INFO] Checking 143 file objects in working directory...`
-    ];
-    setScanLogs(prev => ({ ...prev, [repoId]: currentLogs }));
+    setScanLogs(prev => ({ ...prev, [repoId]: ['[INFO] Scan queued. Waiting for backend scanner...'] }));
 
-    await delay(1200);
-    setRepositories(prev => prev.map(r => r.id === repoId ? { ...r, scanProgress: 35 } : r));
-    currentLogs = [
-      ...currentLogs,
-      `[INFO] Scanning for Secrets (Regex engine + Entropy analyser)...`,
-      `[INFO] Loaded 45 secret signatures rules.`
-    ];
-    setScanLogs(prev => ({ ...prev, [repoId]: currentLogs }));
+    try {
+      const { scan_id: scanId } = await api.createScan(Number(repoId));
+      let scan;
+      do {
+        await delay(2000);
+        scan = await api.getScan(scanId);
+      } while (scan.status === 'queued' || scan.status === 'running');
 
-    await delay(1200);
-    setRepositories(prev => prev.map(r => r.id === repoId ? { ...r, scanProgress: 65 } : r));
-    
-    const activeSecrets = secrets.filter(s => s.repoId === repoId && s.status === 'exposed');
-    if (activeSecrets.length > 0) {
-      activeSecrets.forEach(sec => {
-        currentLogs.push(`[WARN] SEC-LEAK DETECTED: Found matching signature [${sec.type}] in file [${sec.filePath}].`);
-        currentLogs.push(`[WARN] Confidence score: 98% (High Entropy).`);
-      });
-    } else {
-      currentLogs.push(`[INFO] Secret scanning completed. 0 exposed credentials found in files.`);
+      if (scan.status === 'failed') {
+        throw new Error(scan.error || 'Repository scan failed');
+      }
+
+      const data = await fetchSystemData();
+      setRepositories(data.repositories);
+      setSecrets(data.secrets);
+      setVulnerabilities(data.vulnerabilities);
+      setDashboardSummary(data.dashboardSummary);
+      setScanLogs(prev => ({ ...prev, [repoId]: ['[SUCCESS] Scan completed. Findings and dashboard data refreshed.'] }));
+    } catch (error) {
+      setRepositories(prev => prev.map(repo => repo.id === repoId ? { ...repo, scanningStatus: 'idle', scanProgress: 0 } : repo));
+      setScanLogs(prev => ({ ...prev, [repoId]: [`[ERROR] ${error.message}`] }));
     }
-    
-    currentLogs.push(`[INFO] Scanning dependencies for vulnerabilities (OSV database mapping)...`);
-    const activeVulns = vulnerabilities.filter(v => v.repoId === repoId);
-    if (activeVulns.length > 0) {
-      activeVulns.forEach(v => {
-        currentLogs.push(`[WARN] VULNERABILITY FOUND: Package [${v.packageName}] is vulnerable to [${v.cveId}] (${v.severity} severity).`);
-      });
-    } else {
-      currentLogs.push(`[INFO] Dependency check completed. 0 CVEs found.`);
-    }
-
-    setScanLogs(prev => ({ ...prev, [repoId]: [...currentLogs] }));
-
-    await delay(1000);
-    setRepositories(prev => prev.map(r => r.id === repoId ? { ...r, scanProgress: 90 } : r));
-    currentLogs = [
-      ...currentLogs,
-      `[INFO] Executing predictive risk modeling scorecard...`,
-      `[INFO] Score calculated successfully.`
-    ];
-    setScanLogs(prev => ({ ...prev, [repoId]: currentLogs }));
-
-    await delay(800);
-    // Complete scanning
-    setRepositories(prev => prev.map(r => r.id === repoId ? { ...r, scanningStatus: 'idle', scanProgress: 100 } : r));
-    currentLogs = [
-      ...currentLogs,
-      `[SUCCESS] Security audit completed successfully. View findings dashboard.`
-    ];
-    setScanLogs(prev => ({ ...prev, [repoId]: currentLogs }));
   };
 
   // Trigger an AI auto-fix and create a simulated PR
@@ -424,6 +481,7 @@ export const SystemDataProvider = ({ children }) => {
       prs,
       integrations,
       scanLogs,
+      dashboardSummary,
       runSecurityScan,
       triggerAiFix,
       mergePr,
