@@ -21,10 +21,25 @@ def _finding(report: dict, repo_path: Path, history: bool) -> dict:
         file_path = str(Path(file_path).resolve().relative_to(repo_path.resolve())).replace("\\", "/")
     except ValueError:
         file_path = file_path.replace("\\", "/")
+    start_column = end_column = None
+    try:
+        line_text = (
+            repo_path / file_path
+        ).read_text(
+            encoding="utf-8",
+            errors="ignore"
+        ).splitlines()[report["StartLine"] - 1]
+        idx = line_text.find(secret)
+        start_column = idx + 1 if idx >= 0 else None
+        end_column = idx + len(secret) if idx >= 0 else None
+    except (IndexError, KeyError, OSError):
+        # Historical findings can refer to files or lines no longer present at HEAD.
+        pass
     fingerprint = hashlib.sha256(f"{rule_id}{file_path}{secret_hash}".encode()).hexdigest()
     return {
         "type": "secret", "rule_id": rule_id, "title": report.get("Description") or f"Secret detected by {rule_id}",
         "severity": "high", "file_path": file_path, "line": report.get("StartLine"),
+        "start_column": start_column, "end_column": end_column,
         "commit_sha": report.get("Commit") or None, "secret_masked": _mask(secret), "secret_hash": secret_hash,
         "package": None, "ecosystem": None, "installed_version": None, "fixed_version": None,
         "in_history_only": history, "confidence": 1.0, "status": "open", "owasp_ids": [], "asvs_ids": [],

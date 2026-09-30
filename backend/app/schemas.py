@@ -27,6 +27,8 @@ class FindingOut(BaseModel):
     severity: Literal["critical", "high", "medium", "low"]
     file_path: str
     line: int | None = None
+    start_column: int | None = None
+    end_column: int | None = None
     commit_sha: str | None = None
     secret_masked: str | None = None
     package: str | None = None

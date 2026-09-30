@@ -128,7 +128,15 @@ def generate_fix(finding_id: int, db: Session = Depends(get_db)):
             raise APIError(400, "INVALID_FINDING_PATH", "Finding file path is invalid")
         file_content = affected_file.read_text(encoding="utf-8") if affected_file.exists() else ""
         repo_files = [str(path.relative_to(root)).replace("\\", "/") for path in root.rglob("*") if path.is_file() and ".git" not in path.parts]
-        generated = ai_generate_fix(FindingOut.model_validate(finding).model_dump(mode="json"), file_content, repo_files)
+        existing_files = {
+            path: (root / path).read_text(encoding="utf-8")
+            for path in (".gitignore", ".env.example")
+            if (root / path).is_file()
+        }
+        generated = ai_generate_fix(
+            FindingOut.model_validate(finding).model_dump(mode="json"), file_content, repo_files,
+            existing_files=existing_files,
+        )
         required = {"finding_id", "explanation", "edits", "tier", "validation"}
         if set(generated) != required or generated["finding_id"] != finding.id:
             raise APIError(502, "INVALID_AI_FIX", "AI module returned a fix outside the contract")

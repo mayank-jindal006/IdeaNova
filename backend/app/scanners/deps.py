@@ -1,6 +1,7 @@
 import hashlib
 import json
 from pathlib import Path
+from urllib.parse import quote
 
 import httpx
 
@@ -44,6 +45,24 @@ def _fixed_version(vulnerability: dict) -> str | None:
     return None
 
 
+def _enrich_vulnerability(vulnerability: dict) -> dict:
+    """Fetch the full OSV record when querybatch returns an ID-only reference."""
+    if vulnerability.get("severity") or vulnerability.get("affected"):
+        return vulnerability
+    vuln_id = vulnerability.get("id")
+    if not vuln_id:
+        return vulnerability
+    api_url = get_settings().osv_api_url
+    details_url = f"{api_url.rsplit('/querybatch', 1)[0]}/vulns/{quote(vuln_id, safe='')}"
+    try:
+        response = httpx.get(details_url, timeout=30)
+        response.raise_for_status()
+        return response.json()
+    except httpx.HTTPError:
+        # Preserve the querybatch result when enrichment is temporarily unavailable.
+        return vulnerability
+
+
 def scan_dependencies(repo_path: str) -> list[dict]:
     dependencies = _dependencies(Path(repo_path))
     if not dependencies:
@@ -52,6 +71,7 @@ def scan_dependencies(repo_path: str) -> list[dict]:
     findings = []
     for dependency, result in zip(dependencies, results):
         for vulnerability in result.get("vulns", []):
+            vulnerability = _enrich_vulnerability(vulnerability)
             rule_id = vulnerability.get("id", "OSV")
             fingerprint = hashlib.sha256(f"{rule_id}{dependency['name']}{dependency['version']}".encode()).hexdigest()
             findings.append({"type": "dependency", "rule_id": rule_id, "title": vulnerability.get("summary") or rule_id,

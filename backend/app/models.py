@@ -102,6 +102,8 @@ class Finding(Base):
     severity: Mapped[Severity] = mapped_column(Enum(Severity, name="severity"), nullable=False)
     file_path: Mapped[str] = mapped_column(String(1024), nullable=False)
     line: Mapped[int | None] = mapped_column(Integer)
+    start_column: Mapped[int | None] = mapped_column(Integer)
+    end_column: Mapped[int | None] = mapped_column(Integer)
     commit_sha: Mapped[str | None] = mapped_column(String(64))
     secret_masked: Mapped[str | None] = mapped_column(String(1024))
     secret_hash: Mapped[str | None] = mapped_column(String(64))
