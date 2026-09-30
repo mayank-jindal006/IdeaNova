@@ -1,38 +1,74 @@
 """
 LLM client for RepoGuard.
 Every AI feature (explain, fix) calls complete_json() from this file.
+
+Two providers, both configured in backend/.env:
+  LLM_*           -> the main provider (Groq)
+  LLM_FALLBACK_*  -> optional backup (Gemini). Used ONLY if the main provider fails,
+                     e.g. it is down, rate-limited, or keeps returning broken JSON.
 """
 import json
+import logging
 import os
 import re
 import time
+from dataclasses import dataclass
 
 from dotenv import load_dotenv
 
 load_dotenv()
-
-PROVIDER = os.getenv("LLM_PROVIDER", "gemini").lower()
-MODEL = os.getenv("LLM_MODEL")
-API_KEY = os.getenv("LLM_API_KEY")
-BASE_URL = os.getenv("LLM_BASE_URL")  # only needed for the Groq backup
-TIMEOUT = float(os.getenv("LLM_TIMEOUT", "60"))
+logger = logging.getLogger(__name__)
 
 
 class LLMError(Exception):
     """Raised when the LLM cannot give us a usable answer."""
 
-    
 
-def _call_gemini(system: str, user: str) -> str:
+@dataclass(frozen=True)
+class ProviderConfig:
+    provider: str          # "groq" | "gemini" | "openai"
+    model: str | None
+    api_key: str | None
+    base_url: str | None   # only for OpenAI-compatible APIs such as Groq
+    timeout: float
+    label: str             # "main" or "fallback", used in logs and error messages
+
+
+def _config(prefix: str, label: str) -> ProviderConfig | None:
+    """Read one provider's settings from the environment. None if it isn't configured at all."""
+    provider = os.getenv(f"{prefix}PROVIDER")
+    if not provider:
+        return None
+    return ProviderConfig(
+        provider=provider.lower().strip(),
+        model=os.getenv(f"{prefix}MODEL"),
+        api_key=os.getenv(f"{prefix}API_KEY"),
+        base_url=os.getenv(f"{prefix}BASE_URL") or None,
+        timeout=float(os.getenv(f"{prefix}TIMEOUT") or os.getenv("LLM_TIMEOUT") or "60"),
+        label=label,
+    )
+
+
+def _providers() -> list[ProviderConfig]:
+    """Main provider first, then the fallback (if configured). Read on every call, so a
+    changed .env value is picked up without editing code."""
+    main = _config("LLM_", "main")
+    fallback = _config("LLM_FALLBACK_", "fallback")
+    if fallback and not fallback.api_key:
+        fallback = None   # a fallback without a key can't help; don't cut the main provider's retries for it
+    return [c for c in (main, fallback) if c]
+
+
+def _call_gemini(cfg: ProviderConfig, system: str, user: str) -> str:
     from google import genai
     from google.genai import types
 
     client = genai.Client(
-        api_key=API_KEY,
-        http_options=types.HttpOptions(timeout=int(TIMEOUT * 1000)),  # milliseconds
+        api_key=cfg.api_key,
+        http_options=types.HttpOptions(timeout=int(cfg.timeout * 1000)),  # milliseconds
     )
     response = client.models.generate_content(
-        model=MODEL,
+        model=cfg.model,
         contents=user,
         config=types.GenerateContentConfig(
             system_instruction=system,
@@ -43,13 +79,13 @@ def _call_gemini(system: str, user: str) -> str:
     return response.text or ""
 
 
-def _call_openai_compatible(system: str, user: str) -> str:
-    """Used for the Groq backup (and OpenAI if ever needed)."""
+def _call_openai_compatible(cfg: ProviderConfig, system: str, user: str) -> str:
+    """Groq (and OpenAI) use the same request format."""
     from openai import OpenAI
 
-    client = OpenAI(api_key=API_KEY, base_url=BASE_URL, timeout=TIMEOUT)
+    client = OpenAI(api_key=cfg.api_key, base_url=cfg.base_url, timeout=cfg.timeout)
     response = client.chat.completions.create(
-        model=MODEL,
+        model=cfg.model,
         temperature=0.1,
         response_format={"type": "json_object"},
         messages=[
@@ -65,7 +101,6 @@ _CALLERS = {
     "groq": _call_openai_compatible,
     "openai": _call_openai_compatible,
 }
-
 
 
 def extract_json(text: str) -> dict:
@@ -87,29 +122,48 @@ def _is_rate_limit(error: Exception) -> bool:
     return getattr(error, "code", None) == 429 or "429" in message or "RESOURCE_EXHAUSTED" in message
 
 
-
-def complete_json(system: str, user: str, retries: int = 2) -> dict:
-    """Ask the LLM and return its reply as a dict. Retries on bad JSON and network/rate-limit errors."""
-    if not API_KEY or not MODEL:
-        raise LLMError("LLM_API_KEY or LLM_MODEL is missing in backend/.env")
-
-    caller = _CALLERS.get(PROVIDER)
+def _ask(cfg: ProviderConfig, system: str, user: str, retries: int) -> dict:
+    """Ask ONE provider, with retries. Raises LLMError if it can't produce a JSON object."""
+    if not cfg.api_key or not cfg.model:
+        raise LLMError(f"{cfg.label} provider: API key or model is missing in backend/.env")
+    caller = _CALLERS.get(cfg.provider)
     if caller is None:
-        raise LLMError(f"Unknown LLM_PROVIDER '{PROVIDER}'. Use one of: {', '.join(_CALLERS)}")
+        raise LLMError(f"{cfg.label} provider: unknown provider '{cfg.provider}'. Use one of: {', '.join(_CALLERS)}")
 
     last_error = None
     for attempt in range(retries + 1):
         try:
-            raw = caller(system, user)
-            return extract_json(raw)
+            return extract_json(caller(cfg, system, user))
         except json.JSONDecodeError as e:
             last_error = e
             user = user + "\n\nYour previous reply was not valid JSON. Reply with ONLY one JSON object."
-        except Exception as e:
+        except Exception as e:  # network error, timeout, rate limit, provider outage
             last_error = e
             if attempt == retries:
                 break
             wait = 15 if _is_rate_limit(e) else 2 * (attempt + 1)
             time.sleep(wait)
+    raise LLMError(f"{cfg.label} provider ({cfg.provider}) failed after {retries + 1} attempts: {last_error}")
 
-    raise LLMError(f"LLM failed after {retries + 1} attempts: {last_error}")
+
+def complete_json(system: str, user: str, retries: int = 2) -> dict:
+    """Ask the main provider; if it fails, ask the fallback. Returns the reply as a dict."""
+    providers = _providers()
+    if not providers:
+        raise LLMError("No LLM configured: set LLM_PROVIDER, LLM_MODEL and LLM_API_KEY in backend/.env")
+
+    # With a fallback available, don't make the user wait through many retries on a
+    # provider that is already failing: one retry on main, then switch.
+    main_retries = min(retries, 1) if len(providers) > 1 else retries
+
+    errors = []
+    for i, cfg in enumerate(providers):
+        try:
+            result = _ask(cfg, system, user, main_retries if i == 0 else retries)
+            if i > 0:
+                logger.warning("LLM main provider failed; answered by fallback (%s)", cfg.provider)
+            return result
+        except LLMError as e:
+            errors.append(str(e))
+            logger.warning("%s", e)
+    raise LLMError(" | ".join(errors))

@@ -59,7 +59,7 @@ def test_happy_path_builds_full_fix(fake_llm):
     result = fix.generate_fix(AWS, CONTENT, ["config.py"])
 
     assert result["finding_id"] == AWS["id"]
-    assert result["tier"] == "pr_review"
+    assert result["tier"] == "auto_branch"          # 1-line mechanical change, confidence 0.9
     assert result["explanation"]["rotation_required"] is True
     assert "AWS IAM" in result["explanation"]["rotation_note"]
     paths = [e["file_path"] for e in result["edits"]]
@@ -145,7 +145,7 @@ def test_failed_validation_retries_once_with_the_error(fake_llm):
     assert "REJECTED BY OUR CHECKS" in calls[1]
     assert "Gitleaks still finds a secret" in calls[1]
     assert REAL_SECRET not in calls[1]          # the retry never leaks the key either
-    assert result["tier"] == "pr_review"
+    assert result["tier"] in ("auto_branch", "pr_review")
     assert any("second attempt" in n for n in result["validation"]["notes"])
 
 
@@ -162,4 +162,25 @@ def test_bad_reply_then_good_reply_recovers(fake_llm):
     calls = fake_llm([dict(GOOD_REPLY, env_var_name="my key"), GOOD_REPLY])
     result = fix.generate_fix(AWS, CONTENT, ["config.py"])
     assert len(calls) == 2
-    assert result["tier"] == "pr_review"
+    assert result["tier"] in ("auto_branch", "pr_review")
+
+def test_bigger_change_needs_review(fake_llm):
+    rewritten = GOOD_REPLY["new_content"].replace('BUCKET_NAME = "orders-invoices"',
+                                                  'BUCKET_NAME = os.getenv("BUCKET")\nREGION = os.getenv("REGION")')
+    fake_llm(dict(GOOD_REPLY, new_content="import os\n" + rewritten))
+    assert fix.generate_fix(AWS, CONTENT, ["config.py"])["tier"] == "pr_review"
+
+
+def test_generic_rule_needs_review(fake_llm):
+    fake_llm(GOOD_REPLY)
+    generic = dict(AWS, rule_id="generic-api-key", confidence=1.0)
+    assert fix.generate_fix(generic, CONTENT, ["config.py"])["tier"] == "pr_review"   # 0.8 < 0.85
+
+
+def test_secret_in_test_file_is_flag_only_and_llm_not_called(fake_llm):
+    calls = fake_llm(GOOD_REPLY)
+    in_tests = dict(AWS, file_path="tests/test_config.py", confidence=0.9)   # 0.9 * 0.6 = 0.54
+    result = fix.generate_fix(in_tests, CONTENT, ["tests/test_config.py"])
+    assert result["tier"] == "flag_only"
+    assert result["edits"] == []
+    assert calls == []

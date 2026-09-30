@@ -2,7 +2,7 @@
 
 Flow:  check we can fix it -> redact the secret -> ask the LLM to rewrite the file
        -> check the reply -> validate it (Gitleaks + syntax), retry once with the error if
-       it fails -> add .env.example + .gitignore edits in code -> build the Fix.
+       it fails -> add .env.example + .gitignore edits in code -> choose the tier -> build the Fix.
 Whenever something is unsafe or unclear, we return a "flag_only" fix: explanation +
 rotation advice, but NO code change. A missing fix is better than a wrong one.
 """
@@ -11,6 +11,7 @@ import re
 from app.ai.llm import LLMError, complete_json
 from app.ai.prompts import SYSTEM_PROMPT, build_user_prompt
 from app.ai.redact import REDACTION_TOKEN, redact
+from app.ai.tiers import REVIEW_MIN_CONFIDENCE, adjusted_confidence, assign_tier
 from app.ai.validate import passed, validate_fix
 
 MAX_LINES = 300
@@ -156,6 +157,11 @@ def generate_fix(finding: dict, file_content: str, repo_files: list[str],
     if len(file_content.splitlines()) > MAX_LINES:
         return _flag_only(finding, f"the file is longer than {MAX_LINES} lines.")
 
+    confidence = adjusted_confidence(finding)
+    if confidence < REVIEW_MIN_CONFIDENCE:
+        return _flag_only(finding, f"the finding's confidence is low ({confidence}); it may be a false positive "
+                                   "(e.g. a dummy value in test code), so no automatic fix was attempted.")
+
     redacted = redact(file_content, finding)
     if redacted is None:
         # Never send the file if we couldn't hide the secret with certainty.
@@ -204,8 +210,9 @@ def generate_fix(finding: dict, file_content: str, repo_files: list[str],
         if edit:
             edits.append(edit)
 
-    # Tier is decided by tiers.py (Day 4). Until then, everything needs human review.
-    return _fix(finding, reply["explanation"], edits, tier="pr_review", notes=notes, validation=validation)
+    tier = assign_tier(finding, main_edit, confidence)
+    notes.append(f"Tier {tier}: confidence {confidence}. Nothing is merged automatically.")
+    return _fix(finding, reply["explanation"], edits, tier=tier, notes=notes, validation=validation)
 
 
 def _retry_prompt(prompt: str, problems: list[str]) -> str:
