@@ -9,7 +9,8 @@ import {
   PlusIcon,
   XIcon,
   RefreshCwIcon,
-  RepoIcon
+  RepoIcon,
+  AlertTriangleIcon
 } from '../components/icons';
 
 export const Repositories = () => {
@@ -19,6 +20,8 @@ export const Repositories = () => {
   const [sortBy, setSortBy] = useState('risk_desc'); // 'risk_desc' | 'compliance_desc' | 'name_asc'
   const [isModalOpen, setIsModalOpen] = useState(false);
 
+  const [errorText, setErrorText] = useState(null);
+
   const fetchRepositories = async () => {
     setLoading(true);
     setErrorText(null);
@@ -26,21 +29,8 @@ export const Repositories = () => {
       const data = await api.listRepositories();
       setRepositories(data || []);
     } catch (err) {
-      setErrorText(err.message || 'Failed to load repositories');
-      // Fallback repo if empty/error
-      setRepositories([
-        {
-          id: 1,
-          full_name: 'mayank-jindal006/IdeaNova',
-          default_branch: 'design1',
-          created_at: new Date().toISOString(),
-          last_scanned_at: new Date().toISOString(),
-          latest_score: {
-            compliance_score: 85,
-            risk_score: 35
-          }
-        }
-      ]);
+      setErrorText(err.message || 'Failed to load repositories from API.');
+      setRepositories([]);
     } finally {
       setLoading(false);
     }
@@ -103,6 +93,17 @@ export const Repositories = () => {
       />
 
       <div className="page-content-padded">
+        {/* Error notification if any */}
+        {errorText && (
+          <div className="panel-box error-alert-box mb-4">
+            <div className="alert-top">
+              <AlertTriangleIcon size={18} className="text-danger" />
+              <h3 className="alert-title">Backend API Notice</h3>
+            </div>
+            <p className="alert-message">{errorText}</p>
+          </div>
+        )}
+
         {/* Controls Toolbar: Search & Sort */}
         <div className="table-toolbar">
           <div className="search-box">
@@ -180,8 +181,8 @@ export const Repositories = () => {
                   </tr>
                 ) : (
                   filteredRepos.map((repo) => {
-                    const compScore = repo.latest_score?.compliance_score ?? 100;
-                    const riskScore = repo.latest_score?.risk_score ?? 0;
+                    const compScore = repo.latest_score?.compliance_score ?? null;
+                    const riskScore = repo.latest_score?.risk_score ?? null;
 
                     return (
                       <tr key={repo.id}>
@@ -201,33 +202,41 @@ export const Repositories = () => {
                           </span>
                         </td>
                         <td>
-                          <div className="score-meter-wrap">
-                            <span className="score-number font-bold text-success">
-                              {compScore}%
-                            </span>
-                            <div className="meter-track">
-                              <div
-                                className="meter-fill fill-compliance"
-                                style={{ width: `${compScore}%` }}
-                              />
+                          {compScore != null ? (
+                            <div className="score-meter-wrap">
+                              <span className="score-number font-bold text-success">
+                                {compScore}%
+                              </span>
+                              <div className="meter-track">
+                                <div
+                                  className="meter-fill fill-compliance"
+                                  style={{ width: `${compScore}%` }}
+                                />
+                              </div>
                             </div>
-                          </div>
+                          ) : (
+                            <span className="text-secondary text-sm">Not scanned</span>
+                          )}
                         </td>
                         <td>
-                          <div className="score-meter-wrap">
-                            <span className={`score-number font-bold ${riskScore > 40 ? 'text-danger' : riskScore > 20 ? 'text-warning' : 'text-success'}`}>
-                              {riskScore}/100
-                            </span>
-                            <div className="meter-track">
-                              <div
-                                className="meter-fill"
-                                style={{
-                                  width: `${Math.min(riskScore, 100)}%`,
-                                  backgroundColor: riskScore > 40 ? 'var(--color-danger)' : riskScore > 20 ? 'var(--color-warning)' : 'var(--color-success)'
-                                }}
-                              />
+                          {riskScore != null ? (
+                            <div className="score-meter-wrap">
+                              <span className={`score-number font-bold ${riskScore > 40 ? 'text-danger' : riskScore > 20 ? 'text-warning' : 'text-success'}`}>
+                                {riskScore}/100
+                              </span>
+                              <div className="meter-track">
+                                <div
+                                  className="meter-fill"
+                                  style={{
+                                    width: `${Math.min(riskScore, 100)}%`,
+                                    backgroundColor: riskScore > 40 ? 'var(--color-danger)' : riskScore > 20 ? 'var(--color-warning)' : 'var(--color-success)'
+                                  }}
+                                />
+                              </div>
                             </div>
-                          </div>
+                          ) : (
+                            <span className="text-secondary text-sm">Pending</span>
+                          )}
                         </td>
                         <td className="text-right text-secondary text-mono text-sm">
                           {repo.last_scanned_at ? new Date(repo.last_scanned_at).toLocaleDateString() : 'Never'}

@@ -13,38 +13,20 @@ import {
 export const Dashboard = () => {
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [errorText, setErrorText] = useState(null);
 
   useEffect(() => {
     let isMounted = true;
     async function loadSummary() {
       setLoading(true);
+      setErrorText(null);
       try {
         const data = await api.getDashboardSummary();
         if (isMounted) setSummary(data);
-      } catch {
+      } catch (err) {
         if (!isMounted) return;
-        // Fallback default state for initial setup
-        setSummary({
-          totals: { repos: 1, findings: 3 },
-          severity_counts: { critical: 2, high: 1, medium: 0, low: 0 },
-          repo_scores: [
-            {
-              repo_id: 1,
-              full_name: 'mayank-jindal006/IdeaNova',
-              compliance_score: 82,
-              risk_score: 38,
-              risk_factors: [
-                { name: 'historical_secrets', weight: 0.35, contribution: 20 },
-                { name: 'untracked_env', weight: 0.25, contribution: 18 }
-              ]
-            }
-          ],
-          trend: [
-            { date: '2026-09-24', findings: 1 },
-            { date: '2026-09-26', findings: 2 },
-            { date: '2026-09-28', findings: 3 }
-          ]
-        });
+        setErrorText(err.message || 'Failed to connect to RepoGuard Security API.');
+        setSummary(null);
       } finally {
         if (isMounted) setLoading(false);
       }
@@ -63,7 +45,7 @@ export const Dashboard = () => {
 
   const avgCompliance = repoScores.length > 0
     ? Math.round(repoScores.reduce((acc, r) => acc + (r.compliance_score || 0), 0) / repoScores.length)
-    : 85;
+    : null;
 
   return (
     <div className="dashboard-page">
@@ -80,6 +62,17 @@ export const Dashboard = () => {
       />
 
       <div className="page-content-padded">
+        {/* Error notification if any */}
+        {errorText && (
+          <div className="panel-box error-alert-box mb-4">
+            <div className="alert-top">
+              <AlertTriangleIcon size={18} className="text-danger" />
+              <h3 className="alert-title">Backend API Notice</h3>
+            </div>
+            <p className="alert-message">{errorText}</p>
+          </div>
+        )}
+
         {loading && (
           <div className="text-center py-4 mb-4">
             <RefreshCwIcon size={20} className="spin-icon text-secondary" />
@@ -137,7 +130,7 @@ export const Dashboard = () => {
               <CheckCircleIcon size={16} className="text-success" />
             </div>
             <span className="kpi-value text-mono text-success">
-              {avgCompliance}%
+              {avgCompliance != null ? `${avgCompliance}%` : '—'}
             </span>
             <span className="kpi-meta text-muted">OWASP &amp; ASVS index</span>
           </div>

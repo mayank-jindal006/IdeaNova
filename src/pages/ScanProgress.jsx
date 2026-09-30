@@ -50,12 +50,13 @@ export const ScanProgress = () => {
       try {
         const data = await api.getRepository(repoId);
         if (isMounted) setRepo(data);
-      } catch {
+      } catch (err) {
         if (isMounted) {
-          setRepo({
-            id: Number(repoId) || 1,
-            full_name: 'mayank-jindal006/IdeaNova',
-            default_branch: 'design1'
+          setErrorMsg(err.message || 'Failed to load repository details from API.');
+          setScanState({
+            stage: 'failed',
+            label: err.message || 'Repository not found',
+            progress: 0
           });
         }
       }
@@ -87,8 +88,14 @@ export const ScanProgress = () => {
         scanId = createRes?.scan_id;
         addLog(`Scan queued on worker: scan_id #${scanId}.`);
       } catch (err) {
-        addLog(`Mock pipeline mode: ${err.message || 'Starting local scan simulation'}`);
-        scanId = Math.floor(Math.random() * 1000) + 1;
+        setScanState({
+          stage: 'failed',
+          label: err.message || 'Failed to trigger scan on API worker.',
+          progress: 0
+        });
+        addLog(`FATAL: ${err.message || 'Failed to trigger scan on API worker.'}`);
+        setIsScanning(false);
+        return;
       }
 
       setScanState({
@@ -100,78 +107,62 @@ export const ScanProgress = () => {
 
       let elapsedSteps = 0;
 
-      // Polling function
+      // Polling function: Poll GET /api/scans/{id} every 2 seconds
       pollInterval = setInterval(async () => {
         if (cancelled) return;
         elapsedSteps++;
 
         try {
-          if (scanId && typeof api.getScan === 'function') {
-            const scanData = await api.getScan(scanId);
+          const scanData = await api.getScan(scanId);
 
-            if (scanData.status === 'done') {
-              clearInterval(pollInterval);
-              setScanState({
-                stage: 'done',
-                label: 'Scan finished successfully.',
-                progress: 100
-              });
-              addLog(`Scan completed: Status DONE.`);
-              addLog(`Finalizing security control mappings and Heuristic Risk computation...`);
-              setIsScanning(false);
-              return;
-            } else if (scanData.status === 'failed') {
-              clearInterval(pollInterval);
-              setScanState({
-                stage: 'failed',
-                label: scanData.error || 'Scan failed.',
-                progress: 0
-              });
-              addLog(`FATAL: ${scanData.error || 'Scan process reported failure.'}`);
-              setIsScanning(false);
-              return;
-            } else if (scanData.status === 'running') {
-              if (elapsedSteps === 1) {
-                setScanState({
-                  stage: 'scanning_deps',
-                  label: 'Querying OSV.dev for dependency vulnerability advisories...',
-                  progress: 55
-                });
-                addLog('> Querying OSV.dev API (batch query for requirements.txt / package.json)...');
-              } else if (elapsedSteps >= 2) {
-                setScanState({
-                  stage: 'analysing',
-                  label: 'Computing Heuristic Risk Scores and mapping OWASP/ASVS controls...',
-                  progress: 80
-                });
-                addLog('> Reconciling OWASP Top 10 categories & ASVS V3/V6 control mappings...');
-              }
-            }
-          }
-        } catch {
-          // If backend isn't polling or local mock progression
-          if (elapsedSteps === 1) {
-            setScanState({
-              stage: 'scanning_deps',
-              label: 'Querying OSV.dev for dependency vulnerability advisories...',
-              progress: 55
-            });
-            addLog('> Querying OSV.dev API (batch query for requirements.txt / package.json)...');
-          } else if (elapsedSteps === 2) {
-            setScanState({
-              stage: 'analysing',
-              label: 'Computing Heuristic Risk Scores and mapping OWASP/ASVS controls...',
-              progress: 80
-            });
-            addLog('> Reconciling OWASP Top 10 categories & ASVS V3/V6 control mappings...');
-          } else if (elapsedSteps >= 3) {
+          if (scanData.status === 'done') {
             clearInterval(pollInterval);
             setScanState({
               stage: 'done',
-              label: 'Scan pipeline finished successfully.',
+              label: 'Scan finished successfully.',
               progress: 100
             });
-            addLog(`Scan pipeline completed successfully.`);
+            addLog(`Scan completed: Status DONE.`);
+            addLog(`Finalizing security control mappings and Heuristic Risk computation...`);
+            setIsScanning(false);
+            return;
+          } else if (scanData.status === 'failed') {
+            clearInterval(pollInterval);
+            setScanState({
+              stage: 'failed',
+              label: scanData.error || 'Scan failed.',
+              progress: 0
+            });
+            addLog(`FATAL: ${scanData.error || 'Scan process reported failure.'}`);
+            setIsScanning(false);
+            return;
+          } else if (scanData.status === 'running') {
+            if (elapsedSteps === 1) {
+              setScanState({
+                stage: 'scanning_deps',
+                label: 'Querying OSV.dev for dependency vulnerability advisories...',
+                progress: 55
+              });
+              addLog('> Querying OSV.dev API (batch query for requirements.txt / package.json)...');
+            } else if (elapsedSteps >= 2) {
+              setScanState({
+                stage: 'analysing',
+                label: 'Computing Heuristic Risk Scores and mapping OWASP/ASVS controls...',
+                progress: 80
+              });
+              addLog('> Reconciling OWASP Top 10 categories & ASVS V3/V6 control mappings...');
+            }
+          }
+        } catch (pollErr) {
+          addLog(`[WARN] Polling scan #${scanId} failed: ${pollErr.message}`);
+          if (elapsedSteps >= 15) {
+            clearInterval(pollInterval);
+            setScanState({
+              stage: 'failed',
+              label: `Scan polling timed out or failed: ${pollErr.message}`,
+              progress: 0
+            });
+            addLog(`FATAL: Polling timed out. Backend scan status unavailable.`);
             setIsScanning(false);
           }
         }

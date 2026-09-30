@@ -5,21 +5,21 @@ import api from '../api/client';
 
 export const Sidebar = () => {
   const [stats, setStats] = useState({
-    totalRepos: 1,
-    activeFindings: 3,
-    avgCompliance: 85
+    totalRepos: null,
+    activeFindings: null,
+    avgCompliance: null
   });
 
   const loadStats = async () => {
     try {
       const summary = await api.getDashboardSummary();
       if (summary) {
-        const totalRepos = summary.totals?.repos ?? 1;
+        const totalRepos = summary.totals?.repos ?? 0;
         const totalFindings = summary.totals?.findings ?? 0;
         const scores = summary.repo_scores || [];
         const avgComp = scores.length > 0
           ? Math.round(scores.reduce((a, b) => a + (b.compliance_score || 0), 0) / scores.length)
-          : 85;
+          : null;
 
         setStats({
           totalRepos,
@@ -28,7 +28,7 @@ export const Sidebar = () => {
         });
       }
     } catch {
-      // Keep initial defaults
+      // API unreachable
     }
   };
 
@@ -68,7 +68,9 @@ export const Sidebar = () => {
         >
           <RepoIcon size={16} />
           <span>Repositories</span>
-          <span className="nav-counter">{stats.totalRepos}</span>
+          {stats.totalRepos != null && (
+            <span className="nav-counter">{stats.totalRepos}</span>
+          )}
         </NavLink>
       </nav>
 
@@ -76,13 +78,15 @@ export const Sidebar = () => {
         <div className="sidebar-telemetry">
           <div className="telemetry-item">
             <span className="telemetry-label">Active Exposures</span>
-            <span className={`telemetry-val ${stats.activeFindings > 0 ? 'text-danger' : 'text-success'}`}>
-              {stats.activeFindings}
+            <span className={`telemetry-val ${stats.activeFindings > 0 ? 'text-danger' : stats.activeFindings === 0 ? 'text-success' : 'text-muted'}`}>
+              {stats.activeFindings != null ? stats.activeFindings : '—'}
             </span>
           </div>
           <div className="telemetry-item">
             <span className="telemetry-label">Avg Compliance</span>
-            <span className="telemetry-val text-mono">{stats.avgCompliance}%</span>
+            <span className="telemetry-val text-mono">
+              {stats.avgCompliance != null ? `${stats.avgCompliance}%` : '—'}
+            </span>
           </div>
         </div>
 

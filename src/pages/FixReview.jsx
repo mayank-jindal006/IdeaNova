@@ -15,7 +15,6 @@ import {
   FileCodeIcon,
   ExternalLinkIcon
 } from '../components/icons';
-import fixesFallback from '../../fixes.json';
 
 export const FixReview = () => {
   const { findingId } = useParams();
@@ -65,28 +64,7 @@ export const FixReview = () => {
         }
       } catch (err) {
         if (!isMounted) return;
-        // Check if there is fallback data in fixes.json
-        const fallbackFix = Array.isArray(fixesFallback)
-          ? fixesFallback.find((f) => String(f.finding_id) === String(findingId))
-          : null;
-
-        if (fallbackFix) {
-          setFinding({
-            id: Number(findingId),
-            repo_id: 1,
-            type: 'secret',
-            rule_id: 'credential-secret',
-            title: fallbackFix.explanation?.what || 'Detected Secret Credential',
-            severity: 'critical',
-            file_path: fallbackFix.edits?.[0]?.file_path || 'config.py',
-            status: 'open',
-            secret_masked: 'AKIA****WXYZ'
-          });
-          setCurrentFix(fallbackFix);
-          setGenState('generated');
-        } else {
-          setErrorText(err.message || 'Failed to load finding details from API.');
-        }
+        setErrorText(err.message || 'Failed to load finding details from API.');
       } finally {
         if (isMounted) setLoading(false);
       }
@@ -105,36 +83,17 @@ export const FixReview = () => {
     setErrorText(null);
 
     try {
-      let fixData = null;
-      try {
-        fixData = await api.generateFix(findingId);
-      } catch (apiErr) {
-        // If backend AI module is not available (e.g. 503 or 502) or offline,
-        // use matching fixture from fixes.json to ensure frontend remains functional
-        const fallbackFix = Array.isArray(fixesFallback)
-          ? fixesFallback.find((f) => String(f.finding_id) === String(findingId)) || fixesFallback[0]
-          : null;
-
-        if (fallbackFix) {
-          fixData = {
-            ...fallbackFix,
-            id: fallbackFix.id || Number(findingId),
-            finding_id: Number(findingId)
-          };
-        } else {
-          throw apiErr;
-        }
-      }
+      let fixData = await api.generateFix(findingId);
 
       // If backend returned fix without fix id, reload finding to get latest_fix
-      if (!fixData.id) {
+      if (!fixData?.id) {
         try {
           const refreshed = await api.getFinding(findingId);
-          if (refreshed?.latest_fix) {
-            fixData = refreshed.latest_fix;
+          if (refreshed?.latest_fix?.id) {
+            fixData = { ...fixData, id: refreshed.latest_fix.id };
           }
         } catch {
-          // Keep fixData as-is
+          // Non-blocking
         }
       }
 
@@ -150,24 +109,20 @@ export const FixReview = () => {
   // Handle opening pull request via POST /api/fixes/{id}/open-pr
   const handleOpenPR = async () => {
     if (prState === 'opening' || prState === 'opened') return;
-    setPrState('opening');
     setErrorText(null);
 
-    const fixId = currentFix?.id || findingId;
-    try {
-      let result = null;
-      try {
-        result = await api.openPr(fixId);
-      } catch {
-        // If mock / test environment without GitHub token
-        const prNumber = Math.floor(Math.random() * 50) + 12;
-        const repoName = repo?.full_name || 'mayank-jindal006/IdeaNova';
-        result = {
-          pr_number: prNumber,
-          pr_url: `https://github.com/${repoName}/pull/${prNumber}`
-        };
-      }
+    // Enforce valid fix_id - never send finding_id to /fixes/{id}/open-pr
+    const fixId = currentFix?.id;
+    if (!fixId) {
+      setPrState('failed');
+      setErrorText('Cannot open pull request: Missing valid Fix ID. Please generate or refresh the fix first.');
+      return;
+    }
 
+    setPrState('opening');
+
+    try {
+      const result = await api.openPr(fixId);
       setPrResult(result);
       setPrState('opened');
       if (currentFix) {

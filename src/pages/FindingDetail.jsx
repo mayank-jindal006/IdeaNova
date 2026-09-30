@@ -16,7 +16,6 @@ import {
   RefreshCwIcon,
   ExternalLinkIcon
 } from '../components/icons';
-import fixesFallback from '../../fixes.json';
 
 export const FindingDetail = () => {
   const { findingId } = useParams();
@@ -54,34 +53,7 @@ export const FindingDetail = () => {
         }
       } catch (err) {
         if (!isMounted) return;
-        // Fallback check from fixes.json
-        const fallbackFix = Array.isArray(fixesFallback)
-          ? fixesFallback.find((f) => String(f.finding_id) === String(findingId))
-          : null;
-
-        if (fallbackFix) {
-          setFinding({
-            id: Number(findingId),
-            repo_id: 1,
-            type: 'secret',
-            rule_id: fallbackFix.finding_id === 1 ? 'aws-access-token' : fallbackFix.finding_id === 2 ? 'stripe-secret-key' : 'github-pat',
-            title: fallbackFix.explanation?.what || 'Detected Hardcoded Secret Token',
-            severity: 'critical',
-            file_path: fallbackFix.edits?.[0]?.file_path || 'config.py',
-            line: 5,
-            commit_sha: 'a1b2c3d4e5f6',
-            secret_masked: 'AKIA****WXYZ',
-            in_history_only: false,
-            confidence: 0.95,
-            status: 'open',
-            owasp_ids: ['A07:2021-Identification and Authentication Failures'],
-            asvs_ids: ['V6.4.1 Secret Architecture'],
-            latest_fix: fallbackFix,
-            rotation_checklist: []
-          });
-        } else {
-          setErrorText(err.message || 'Failed to retrieve finding details.');
-        }
+        setErrorText(err.message || 'Failed to retrieve finding details from API.');
       } finally {
         if (isMounted) setLoading(false);
       }
@@ -245,7 +217,7 @@ export const FindingDetail = () => {
                 <div className="attr-item">
                   <span className="attr-label">Commit SHA</span>
                   <span className="attr-value text-mono text-secondary">
-                    {finding?.commit_sha ? finding.commit_sha.slice(0, 10) : 'HEAD'}
+                    {finding?.commit_sha ? finding.commit_sha.slice(0, 10) : '—'}
                   </span>
                 </div>
                 <div className="attr-item">
@@ -400,13 +372,13 @@ export const FindingDetail = () => {
                 <div className="score-mini-box">
                   <span className="score-mini-label">Compliance</span>
                   <span className="score-mini-val text-success">
-                    {repo?.latest_score?.compliance_score ?? 88}%
+                    {repo?.latest_score?.compliance_score != null ? `${repo.latest_score.compliance_score}%` : '—'}
                   </span>
                 </div>
                 <div className="score-mini-box">
                   <span className="score-mini-label">Heuristic Risk</span>
                   <span className="score-mini-val text-warning">
-                    {repo?.latest_score?.risk_score ?? 35}/100
+                    {repo?.latest_score?.risk_score != null ? `${repo.latest_score.risk_score}/100` : '—'}
                   </span>
                 </div>
               </div>

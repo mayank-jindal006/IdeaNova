@@ -48,70 +48,7 @@ export const RepositoryDetail = () => {
         setFindings(findingsData || []);
       } catch (err) {
         if (!isMounted) return;
-        setErrorText(err.message || 'Failed to load repository details');
-        // Graceful fallback for initial preview
-        setRepo({
-          id: Number(repoId) || 1,
-          full_name: 'mayank-jindal006/IdeaNova',
-          default_branch: 'design1',
-          created_at: new Date().toISOString(),
-          last_scanned_at: new Date().toISOString(),
-          latest_score: {
-            compliance_score: 82,
-            risk_score: 38,
-            risk_factors: [
-              { name: 'historical_secrets', weight: 0.35, contribution: 20 },
-              { name: 'untracked_env', weight: 0.25, contribution: 18 }
-            ]
-          }
-        });
-
-        // Sample findings from fixes.json if available
-        const sampleFindings = [
-          {
-            id: 1,
-            repo_id: Number(repoId) || 1,
-            type: 'secret',
-            rule_id: 'aws-access-token',
-            title: 'AWS Access Key committed in source',
-            severity: 'critical',
-            file_path: 'config.py',
-            line: 5,
-            commit_sha: 'a1b2c3d4',
-            secret_masked: 'AKIA****WXYZ',
-            status: 'open',
-            confidence: 0.95
-          },
-          {
-            id: 2,
-            repo_id: Number(repoId) || 1,
-            type: 'secret',
-            rule_id: 'stripe-secret-key',
-            title: 'Stripe API live secret key in source',
-            severity: 'critical',
-            file_path: 'payments.py',
-            line: 3,
-            commit_sha: 'e5f6g7h8',
-            secret_masked: 'sk_live_****Ctj',
-            status: 'open',
-            confidence: 0.98
-          },
-          {
-            id: 3,
-            repo_id: Number(repoId) || 1,
-            type: 'secret',
-            rule_id: 'github-pat',
-            title: 'GitHub Personal Access Token committed',
-            severity: 'high',
-            file_path: 'scripts/deploy.py',
-            line: 7,
-            commit_sha: 'c9d0e1f2',
-            secret_masked: 'github_pat_****90ab',
-            status: 'needs_rotation',
-            confidence: 0.92
-          }
-        ];
-        setFindings(sampleFindings);
+        setErrorText(err.message || 'Failed to load repository details from API.');
       } finally {
         if (isMounted) setLoading(false);
       }
@@ -163,12 +100,10 @@ export const RepositoryDetail = () => {
     );
   }
 
-  const complianceScore = repo?.latest_score?.compliance_score ?? 85;
-  const riskScore = repo?.latest_score?.risk_score ?? 35;
-  const riskFactors = repo?.latest_score?.risk_factors || [
-    { name: 'historical_secrets', weight: 0.35, contribution: 20 },
-    { name: 'untracked_env', weight: 0.25, contribution: 15 }
-  ];
+  const latestScore = repo?.latest_score;
+  const complianceScore = latestScore?.compliance_score ?? null;
+  const riskScore = latestScore?.risk_score ?? null;
+  const riskFactors = latestScore?.risk_factors || [];
 
   return (
     <div className="repository-detail-page">
@@ -190,6 +125,17 @@ export const RepositoryDetail = () => {
       />
 
       <div className="page-content-padded">
+        {/* Error notification if any */}
+        {errorText && (
+          <div className="panel-box error-alert-box mb-4">
+            <div className="alert-top">
+              <AlertTriangleIcon size={18} className="text-danger" />
+              <h3 className="alert-title">Backend API Notice</h3>
+            </div>
+            <p className="alert-message">{errorText}</p>
+          </div>
+        )}
+
         {/* Repo Telemetry Posture Grid */}
         <div className="posture-grid">
           {/* Compliance Card */}
@@ -202,13 +148,20 @@ export const RepositoryDetail = () => {
               <span className="badge badge-success">OWASP &amp; ASVS</span>
             </div>
             <div className="posture-score-display">
-              <span className="posture-score-number text-success font-bold">{complianceScore}%</span>
+              <span className="posture-score-number text-success font-bold">
+                {complianceScore != null ? `${complianceScore}%` : '—'}
+              </span>
               <p className="posture-score-desc">
-                Measured against OWASP Top 10 and ASVS security control verification.
+                {complianceScore != null
+                  ? 'Measured against OWASP Top 10 and ASVS security control verification.'
+                  : 'No compliance index recorded yet. Run a scan to compute security metrics.'}
               </p>
             </div>
             <div className="meter-track">
-              <div className="meter-fill fill-compliance" style={{ width: `${complianceScore}%` }} />
+              <div
+                className="meter-fill fill-compliance"
+                style={{ width: `${complianceScore != null ? complianceScore : 0}%` }}
+              />
             </div>
           </div>
 
@@ -222,19 +175,38 @@ export const RepositoryDetail = () => {
               <span className="badge badge-neutral">Signal-weighted</span>
             </div>
             <div className="posture-score-display">
-              <span className={`posture-score-number font-bold ${riskScore > 40 ? 'text-danger' : riskScore > 20 ? 'text-warning' : 'text-success'}`}>
-                {riskScore}/100
+              <span
+                className={`posture-score-number font-bold ${
+                  riskScore != null
+                    ? riskScore > 40
+                      ? 'text-danger'
+                      : riskScore > 20
+                      ? 'text-warning'
+                      : 'text-success'
+                    : 'text-muted'
+                }`}
+              >
+                {riskScore != null ? `${riskScore}/100` : '—'}
               </span>
               <p className="posture-score-desc">
-                Derived from Git history depth, credential severity, and environment hygiene.
+                {riskScore != null
+                  ? 'Derived from Git history depth, credential severity, and environment hygiene.'
+                  : 'Heuristic risk score pending repository security scan.'}
               </p>
             </div>
             <div className="meter-track">
               <div
                 className="meter-fill"
                 style={{
-                  width: `${Math.min(riskScore, 100)}%`,
-                  backgroundColor: riskScore > 40 ? 'var(--color-danger)' : riskScore > 20 ? 'var(--color-warning)' : 'var(--color-success)'
+                  width: `${riskScore != null ? Math.min(riskScore, 100) : 0}%`,
+                  backgroundColor:
+                    riskScore != null
+                      ? riskScore > 40
+                        ? 'var(--color-danger)'
+                        : riskScore > 20
+                        ? 'var(--color-warning)'
+                        : 'var(--color-success)'
+                      : 'var(--border-color)'
                 }}
               />
             </div>
