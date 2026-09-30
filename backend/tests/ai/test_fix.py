@@ -22,18 +22,34 @@ GOOD_REPLY = {
 }
 
 
+PASS = {"secret_removed": True, "syntax_ok": True, "notes": ["ok"]}
+FAIL = {"secret_removed": False, "syntax_ok": True, "notes": ["Gitleaks still finds a secret in config.py."]}
+
+
 @pytest.fixture
 def fake_llm(monkeypatch):
-    """Replace the real LLM. Records every prompt so we can check what would be sent."""
+    """Replace the real LLM (and, by default, the validator). Records every prompt sent.
+
+    reply   -- one reply, or a list of replies for successive calls
+    results -- list of validation results for successive validate_fix calls (default: always pass)
+    """
     calls = []
 
-    def install(reply=None, error=None):
+    def install(reply=None, error=None, results=None):
+        replies = list(reply) if isinstance(reply, list) else None
+        checks = list(results) if results else None
+
         def fake(system, user, retries=2):
             calls.append(system + user)
             if error:
                 raise error
-            return reply
+            return replies.pop(0) if replies is not None else reply
+
+        def fake_validate(edits, main_file):
+            return checks.pop(0) if checks else PASS
+
         monkeypatch.setattr(fix, "complete_json", fake)
+        monkeypatch.setattr(fix, "validate_fix", fake_validate)
         return calls
     return install
 
@@ -114,3 +130,36 @@ def test_windows_line_endings_are_kept(fake_llm):
     fake_llm(GOOD_REPLY)   # LLM replies with \n
     result = fix.generate_fix(AWS, crlf, ["config.py"])
     assert result["edits"][0]["new_content"] == GOOD_REPLY["new_content"].replace("\n", "\r\n")
+
+def test_validation_result_is_included(fake_llm):
+    fake_llm(GOOD_REPLY)
+    result = fix.generate_fix(AWS, CONTENT, ["config.py"])
+    assert result["validation"]["secret_removed"] is True
+    assert result["validation"]["syntax_ok"] is True
+
+
+def test_failed_validation_retries_once_with_the_error(fake_llm):
+    calls = fake_llm([GOOD_REPLY, GOOD_REPLY], results=[FAIL, PASS])
+    result = fix.generate_fix(AWS, CONTENT, ["config.py"])
+    assert len(calls) == 2
+    assert "REJECTED BY OUR CHECKS" in calls[1]
+    assert "Gitleaks still finds a secret" in calls[1]
+    assert REAL_SECRET not in calls[1]          # the retry never leaks the key either
+    assert result["tier"] == "pr_review"
+    assert any("second attempt" in n for n in result["validation"]["notes"])
+
+
+def test_failing_twice_is_flag_only_with_no_edits(fake_llm):
+    calls = fake_llm([GOOD_REPLY, GOOD_REPLY], results=[FAIL, FAIL])
+    result = fix.generate_fix(AWS, CONTENT, ["config.py"])
+    assert len(calls) == 2
+    assert result["tier"] == "flag_only"
+    assert result["edits"] == []
+    assert any("did not pass validation" in n for n in result["validation"]["notes"])
+
+
+def test_bad_reply_then_good_reply_recovers(fake_llm):
+    calls = fake_llm([dict(GOOD_REPLY, env_var_name="my key"), GOOD_REPLY])
+    result = fix.generate_fix(AWS, CONTENT, ["config.py"])
+    assert len(calls) == 2
+    assert result["tier"] == "pr_review"

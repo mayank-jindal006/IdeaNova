@@ -1,7 +1,8 @@
 """AI fix agent: turn one secret finding into a Fix object (see docs/CONTRACTS.md, section 3).
 
 Flow:  check we can fix it -> redact the secret -> ask the LLM to rewrite the file
-       -> check the reply -> add .env.example + .gitignore edits in code -> build the Fix.
+       -> check the reply -> validate it (Gitleaks + syntax), retry once with the error if
+       it fails -> add .env.example + .gitignore edits in code -> build the Fix.
 Whenever something is unsafe or unclear, we return a "flag_only" fix: explanation +
 rotation advice, but NO code change. A missing fix is better than a wrong one.
 """
@@ -10,16 +11,18 @@ import re
 from app.ai.llm import LLMError, complete_json
 from app.ai.prompts import SYSTEM_PROMPT, build_user_prompt
 from app.ai.redact import REDACTION_TOKEN, redact
+from app.ai.validate import passed, validate_fix
 
 MAX_LINES = 300
+MAX_ATTEMPTS = 2   # first try + one retry with the validation error
 ENV_EXAMPLE = ".env.example"
 GITIGNORE = ".gitignore"
 ENV_VAR_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{1,63}$")
 
+# Only languages validate.py can syntax-check. (TypeScript/JSX need a compiler we don't ship.)
 LANGUAGES = {
     ".py": "python",
     ".js": "node", ".mjs": "node", ".cjs": "node",
-    ".ts": "node", ".jsx": "node", ".tsx": "node",
 }
 
 ROTATION_NOTES = {
@@ -45,7 +48,8 @@ def rotation_note(finding: dict) -> str:
     return ROTATION_NOTES.get(finding.get("rule_id"), DEFAULT_ROTATION_NOTE) + HISTORY_WARNING
 
 
-def _fix(finding: dict, explanation: dict, edits: list[dict], tier: str, notes: list[str]) -> dict:
+def _fix(finding: dict, explanation: dict, edits: list[dict], tier: str, notes: list[str],
+         validation: dict | None = None) -> dict:
     """Build a Fix object in the exact shape of CONTRACTS.md section 3."""
     is_secret = finding.get("type") == "secret"
     return {
@@ -57,8 +61,12 @@ def _fix(finding: dict, explanation: dict, edits: list[dict], tier: str, notes: 
         },
         "edits": edits,
         "tier": tier,
-        # Filled in by validate.py (Day 3). None = "not checked yet".
-        "validation": {"secret_removed": None, "syntax_ok": None, "notes": notes},
+        # None = "not checked" (e.g. flag_only fixes, where there is no code change to check).
+        "validation": {
+            "secret_removed": (validation or {}).get("secret_removed"),
+            "syntax_ok": (validation or {}).get("syntax_ok"),
+            "notes": list((validation or {}).get("notes", [])) + notes,
+        },
     }
 
 
@@ -144,7 +152,7 @@ def generate_fix(finding: dict, file_content: str, repo_files: list[str],
 
     language = detect_language(finding.get("file_path", ""))
     if language is None:
-        return _flag_only(finding, "automatic fixes are only supported for Python and JavaScript/TypeScript files.")
+        return _flag_only(finding, "automatic fixes are only supported for Python and JavaScript files.")
     if len(file_content.splitlines()) > MAX_LINES:
         return _flag_only(finding, f"the file is longer than {MAX_LINES} lines.")
 
@@ -153,22 +161,42 @@ def generate_fix(finding: dict, file_content: str, repo_files: list[str],
         # Never send the file if we couldn't hide the secret with certainty.
         return _flag_only(finding, "the secret's exact position could not be confirmed, so the file was not sent to the AI.")
 
-    try:
-        reply = complete_json(SYSTEM_PROMPT, build_user_prompt(finding, redacted, language, repo_files))
-    except LLMError:
-        return _flag_only(finding, "the AI service was not available.")
+    prompt = build_user_prompt(finding, redacted, language, repo_files)
+    validation: dict = {}
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            reply = complete_json(SYSTEM_PROMPT, prompt)
+        except LLMError:
+            return _flag_only(finding, "the AI service was not available.")
 
-    problem = _reply_problem(reply)
-    if problem:
-        return _flag_only(finding, problem)
+        problem = _reply_problem(reply)
+        if problem:
+            if attempt < MAX_ATTEMPTS:
+                prompt = _retry_prompt(prompt, [problem])
+                continue
+            return _flag_only(finding, problem)
+
+        main_edit = {
+            "file_path": finding["file_path"],
+            "original_content": file_content,
+            "new_content": _match_line_endings(reply["new_content"], file_content),
+        }
+        validation = validate_fix([main_edit], finding["file_path"])
+        if passed(validation):
+            break
+        if attempt < MAX_ATTEMPTS:
+            prompt = _retry_prompt(prompt, validation["notes"])
+    else:
+        # Both attempts failed validation: never propose a fix we know is broken.
+        result = _flag_only(finding, "the AI fix did not pass validation.")
+        result["validation"]["notes"] = validation.get("notes", []) + result["validation"]["notes"]
+        return result
 
     env_var = reply["env_var_name"]
     notes: list[str] = []
-    edits = [{
-        "file_path": finding["file_path"],
-        "original_content": file_content,
-        "new_content": _match_line_endings(reply["new_content"], file_content),
-    }]
+    if attempt > 1:
+        notes.append("The first AI attempt failed validation; this is the corrected second attempt.")
+    edits = [main_edit]
     for edit in (
         _support_file_edit(ENV_EXAMPLE, f"{env_var}=", env_var, repo_files, existing_files, notes),
         _support_file_edit(GITIGNORE, ".env", ".env", repo_files, existing_files, notes),
@@ -177,4 +205,11 @@ def generate_fix(finding: dict, file_content: str, repo_files: list[str],
             edits.append(edit)
 
     # Tier is decided by tiers.py (Day 4). Until then, everything needs human review.
-    return _fix(finding, reply["explanation"], edits, tier="pr_review", notes=notes)
+    return _fix(finding, reply["explanation"], edits, tier="pr_review", notes=notes, validation=validation)
+
+
+def _retry_prompt(prompt: str, problems: list[str]) -> str:
+    """Send the same task again, plus what was wrong with the last answer."""
+    return (prompt + "\n\nYOUR PREVIOUS ANSWER WAS REJECTED BY OUR CHECKS:\n- "
+            + "\n- ".join(problems)
+            + "\nFix these problems and reply again with the complete JSON object.")
