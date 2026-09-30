@@ -1,0 +1,12 @@
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+SQLAlchemy==2.0.36
+psycopg[binary]==3.3.6
+alembic==1.14.0
+pydantic-settings==2.7.0
+PyGithub==2.5.0
+# PyGithub imports PyNaCl; pin its C extension dependency to a wheel supported
+# by the project-standard CPython 3.11 on Windows.
+PyNaCl==1.5.0
+cffi==1.17.1
+httpx==0.28.1

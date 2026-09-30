@@ -23,10 +23,10 @@ const BrainIcon = () => (
 export const Dashboard = () => {
   const navigate = useNavigate();
   const { user } = useAuth();
-  const { repositories, secrets, vulnerabilities, prs } = useSystemData();
+  const { repositories, secrets, vulnerabilities, prs, dashboardSummary } = useSystemData();
 
   // 1. Calculations
-  const totalRepos = repositories.length;
+  const totalRepos = dashboardSummary?.totals?.repos ?? repositories.length;
   
   // Active Secrets (only count 'exposed' and 'fixing')
   const activeSecrets = secrets.filter(s => s.status === 'exposed' || s.status === 'fixing').length;
@@ -35,7 +35,8 @@ export const Dashboard = () => {
   const totalCVEs = vulnerabilities.length;
   
   // Average Compliance Score
-  const avgCompliance = Math.round(repositories.reduce((sum, r) => sum + r.complianceScore, 0) / totalRepos);
+  const scores = dashboardSummary?.repo_scores?.map(repo => repo.compliance_score) ?? repositories.map(repo => repo.complianceScore);
+  const avgCompliance = scores.length ? Math.round(scores.reduce((sum, score) => sum + score, 0) / scores.length) : 0;
   
   // Resolved Issues
   const resolvedIssues = secrets.filter(s => s.status === 'resolved').length;
@@ -44,12 +45,9 @@ export const Dashboard = () => {
   const sortedRiskRepos = [...repositories].sort((a, b) => b.leakProbability - a.leakProbability);
 
   // Severe alert level counts
-  const criticalIssuesCount = secrets.filter(s => s.severity === 'critical' && (s.status === 'exposed' || s.status === 'fixing')).length +
-                               vulnerabilities.filter(v => v.severity === 'critical').length;
-  const highIssuesCount = secrets.filter(s => s.severity === 'high' && (s.status === 'exposed' || s.status === 'fixing')).length +
-                           vulnerabilities.filter(v => v.severity === 'high').length;
-  const medIssuesCount = secrets.filter(s => s.severity === 'medium' && (s.status === 'exposed' || s.status === 'fixing')).length +
-                          vulnerabilities.filter(v => v.severity === 'medium').length;
+  const criticalIssuesCount = dashboardSummary?.severity_counts?.critical ?? secrets.filter(s => s.severity === 'critical' && (s.status === 'exposed' || s.status === 'fixing')).length + vulnerabilities.filter(v => v.severity === 'critical').length;
+  const highIssuesCount = dashboardSummary?.severity_counts?.high ?? secrets.filter(s => s.severity === 'high' && (s.status === 'exposed' || s.status === 'fixing')).length + vulnerabilities.filter(v => v.severity === 'high').length;
+  const medIssuesCount = dashboardSummary?.severity_counts?.medium ?? secrets.filter(s => s.severity === 'medium' && (s.status === 'exposed' || s.status === 'fixing')).length + vulnerabilities.filter(v => v.severity === 'medium').length;
 
   return (
     <div className="animate-fade-in">
