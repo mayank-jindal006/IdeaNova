@@ -96,7 +96,7 @@ Every feature, schema, algorithm, and UI component in RepoGuard is backed by ver
 | **Database** | PostgreSQL 16 (Docker) | Relational storage for repos, scans, findings, fixes, scores, and feedback. |
 | **Scanners** | Gitleaks 8.30.x, OSV.dev Batch API | High-entropy regex secret scanning and open-source dependency CVE analysis. |
 | **AI / LLM** | Groq (`openai/gpt-oss-120b`), Gemini (`gemini-3.6-flash`) | Context-aware code remediation, explanation synthesis, multi-secret preservation, and review tier classification. |
-| **Contracts** | `docs/CONTRACTS.md` (v1.1) | Single source of truth for all database schemas, API shapes, and snake_case models. |
+| **Contracts** | `docs/CONTRACTS.md` (v1.2) | Single source of truth for all database schemas, API shapes, self-healing agent pipelines, and snake_case models. |
 
 ---
 
@@ -124,6 +124,20 @@ Every feature, schema, algorithm, and UI component in RepoGuard is backed by ver
 - **Operations Dashboard (`src/pages/Dashboard.jsx`):** Consumes `GET /api/dashboard/summary` to render KPI statistics, repository security postures, severity distributions, and a 7-day detection trend graph.
 - **Repository Inventory & Posture (`src/pages/Repositories.jsx`, `src/pages/RepositoryDetail.jsx`):** Searchable, sortable repo lists with transparent Heuristic Risk Factor breakdowns (`RiskFactorBreakdown.jsx`).
 - **Live Scan Pipeline (`src/pages/ScanProgress.jsx`):** Triggers `POST /api/repos/{id}/scan` and polls `GET /api/scans/{id}` every 2 seconds with live terminal log streaming and stage progression.
+- **Agent Activity Timeline (`src/components/AgentActivityTimeline.jsx`, v1.2):**
+  - Consumes `GET /api/agent/runs?repo_id=` with automated 4-second polling while runs are active.
+  - Renders continuous self-healing loop: `detected` → `fix_generated` → `pr_opened` → `ci_failed` (terminal log box with error line highlighting) → `repaired` (self-healing patch notice) → `ci_passed`.
+  - Provides step filtering, polling pause/resume, and demo fallback telemetry.
+- **CI Status Badges (`src/components/CIStatusBadge.jsx`, v1.2):**
+  - Displays real-time CI test status (`pending`, `passed`, `failed`, `none`) with automated repair attempt counters (`#1`, `#2`).
+  - Integrated across Fix Review (`FixReview.jsx`), Finding Detail (`FindingDetail.jsx`), and Repository Findings (`RepositoryDetail.jsx`).
+- **Continuous Auto-Fix on Push Toggle (v1.2):**
+  - Added dedicated toggle control on `RepositoryDetail.jsx` and quick indicator on `Repositories.jsx`.
+  - Dispatches `PATCH /api/repos/{id}` with `{ auto_fix_enabled: boolean }` with optimistic UI and error reversion.
+- **GitHub Actions CI Pipeline (`.github/workflows/ci.yml`, v1.2):**
+  - Setup unified CI workflow for `design1` branch covering `frontend` (Node 20, `npm ci`, `oxlint`, `vite build`), `backend` (Python 3.11, PostgreSQL 16 service, `pytest`), and `secrets` (Gitleaks scan with `.gitleaks.toml` allowlist).
+- **Automated Frontend CD Deployment (v1.2):**
+  - Configured zero-friction automated single-page application deployments with `vercel.json` and `netlify.toml` URL rewrite rules (`/*` -> `/index.html`).
 - **Sanitization & Quality:** Completely purged unsupported claims (removed "AST scanner" and "signs the commit" references); removed all silent mock fallbacks; passed `oxlint` (0 errors, 0 warnings) and production Vite build.
 
 ---

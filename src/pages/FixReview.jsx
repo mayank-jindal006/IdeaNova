@@ -6,6 +6,8 @@ import DiffViewer from '../components/DiffViewer';
 import SeverityBadge from '../components/SeverityBadge';
 import StatusChip from '../components/StatusChip';
 import RotationChecklist from '../components/RotationChecklist';
+import CIStatusBadge from '../components/CIStatusBadge';
+import AgentActivityTimeline from '../components/AgentActivityTimeline';
 import EmptyState from '../components/EmptyState';
 import {
   DiffIcon,
@@ -219,6 +221,14 @@ export const FixReview = () => {
               </button>
             )}
 
+            {/* CI Status Badge if Fix Exists */}
+            {currentFix && (
+              <CIStatusBadge
+                status={currentFix.ci_status || (isPrOpened ? 'passed' : 'none')}
+                repairAttempts={currentFix.repair_attempts || 0}
+              />
+            )}
+
             {/* Step 3: PR Created Indicator */}
             {isPrOpened && (
               <a
@@ -284,9 +294,17 @@ export const FixReview = () => {
                 )}
               </div>
             </div>
-            <div className="pr-meta-row text-mono">
+            <div className="pr-meta-row text-mono" style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
               <span>Target Branch: <strong className="text-primary">{repo?.default_branch || 'main'}</strong></span>
-              <span>Remediation Branch: <strong className="text-secondary">repoguard/fix-{finding?.id}</strong></span>
+              <span>Remediation Branch: <strong className="text-secondary">{currentFix?.branch || `repoguard/fix-${finding?.id}`}</strong></span>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                <span className="text-secondary">CI Check:</span>
+                <CIStatusBadge
+                  status={currentFix?.ci_status || 'passed'}
+                  repairAttempts={currentFix?.repair_attempts || 0}
+                  size="sm"
+                />
+              </span>
               <span className="text-secondary">Direct PR Link: <a href={prUrl} target="_blank" rel="noopener noreferrer" className="text-primary underline">{prUrl}</a></span>
             </div>
           </div>
@@ -557,6 +575,16 @@ export const FixReview = () => {
               </Link>
             </div>
           </div>
+        </div>
+
+        {/* Self-Healing Agent Timeline for this Finding & Fix */}
+        <div style={{ marginTop: '28px' }}>
+          <AgentActivityTimeline
+            repoId={finding?.repo_id}
+            findingId={finding?.id}
+            fixId={currentFix?.id}
+            title={`Self-Healing Agent Run Pipeline · Finding #${finding?.id}`}
+          />
         </div>
       </div>
     </div>

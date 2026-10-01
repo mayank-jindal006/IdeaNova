@@ -67,6 +67,23 @@ export const api = {
       body: JSON.stringify({ verdict, note })
     }),
 
+  // Agent & CI Runs (v1.2)
+  getAgentRuns: (params = {}) => {
+    const query = new URLSearchParams();
+    if (params.repo_id) query.set('repo_id', params.repo_id);
+    if (params.finding_id) query.set('finding_id', params.finding_id);
+    if (params.fix_id) query.set('fix_id', params.fix_id);
+    const qs = query.toString();
+    return request(`/agent/runs${qs ? `?${qs}` : ''}`);
+  },
+
+  // Update repository settings (e.g. auto_fix_enabled)
+  updateRepository: (repoId, data) =>
+    request(`/repos/${repoId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data)
+    }),
+
   // Dashboard
   getDashboardSummary: () => request('/dashboard/summary')
 };

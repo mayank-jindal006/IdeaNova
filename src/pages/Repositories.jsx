@@ -190,9 +190,18 @@ export const Repositories = () => {
                           <div className="repo-name-cell">
                             <RepoIcon size={16} className="text-secondary" />
                             <div>
-                              <Link to={`/repositories/${repo.id}`} className="repo-title-link">
-                                {repo.full_name}
-                              </Link>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <Link to={`/repositories/${repo.id}`} className="repo-title-link">
+                                  {repo.full_name}
+                                </Link>
+                                <span
+                                  className={`badge ${repo.auto_fix_enabled ? 'badge-success' : 'badge-neutral'} text-xs font-mono`}
+                                  style={{ fontSize: '10px', padding: '1px 6px' }}
+                                  title={repo.auto_fix_enabled ? 'Auto-fix on push is enabled' : 'Manual remediation only'}
+                                >
+                                  {repo.auto_fix_enabled ? 'Auto-Fix: ON' : 'Auto-Fix: OFF'}
+                                </span>
+                              </div>
                             </div>
                           </div>
                         </td>
