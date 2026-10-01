@@ -32,3 +32,9 @@ __pycache__/
 *.pyc
 .pytest_cache/
 venv/
+
+# Ignored binary/presentation and draft files
+*.pptx
+*.ppt
+AI-Secure-DevOps-Copilot*.md
+/requirements.txt

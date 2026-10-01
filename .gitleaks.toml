@@ -1,0 +1,6 @@
+[allowlist]
+description = "RepoGuard test fixtures, synthetic credentials, and AI samples"
+paths = [
+  '''backend/tests/ai/samples/.*''',
+  '''fixtures/.*''',
+]

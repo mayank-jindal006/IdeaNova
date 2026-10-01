@@ -5,6 +5,7 @@ import Header from '../components/Header';
 import SeverityBadge from '../components/SeverityBadge';
 import StatusChip from '../components/StatusChip';
 import RotationChecklist from '../components/RotationChecklist';
+import CIStatusBadge from '../components/CIStatusBadge';
 import EmptyState from '../components/EmptyState';
 import {
   ShieldIcon,
@@ -396,18 +397,36 @@ export const FindingDetail = () => {
                 <span>Review &amp; Generate Fix</span>
               </Link>
 
-              {finding?.latest_fix?.pr_url && (
-                <div style={{ marginTop: '12px' }}>
-                  <a
-                    href={finding.latest_fix.pr_url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="btn-secondary btn-block"
-                    style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}
-                  >
-                    <span>View GitHub PR #{finding.latest_fix.pr_number}</span>
-                    <ExternalLinkIcon size={12} />
-                  </a>
+              {finding?.latest_fix && (
+                <div style={{ marginTop: '14px', paddingTop: '12px', borderTop: '1px solid var(--border-default)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+                    <span className="text-xs text-secondary">CI Workflow Status:</span>
+                    <CIStatusBadge
+                      status={finding.latest_fix.ci_status || 'none'}
+                      repairAttempts={finding.latest_fix.repair_attempts || 0}
+                      size="sm"
+                    />
+                  </div>
+
+                  {finding.latest_fix.branch && (
+                    <div style={{ marginBottom: '8px', fontSize: '11px', color: 'var(--text-secondary)' }}>
+                      <span>Branch: </span>
+                      <code className="text-mono text-xs">{finding.latest_fix.branch}</code>
+                    </div>
+                  )}
+
+                  {finding.latest_fix.pr_url && (
+                    <a
+                      href={finding.latest_fix.pr_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="btn-secondary btn-block"
+                      style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}
+                    >
+                      <span>View GitHub PR #{finding.latest_fix.pr_number}</span>
+                      <ExternalLinkIcon size={12} />
+                    </a>
+                  )}
                 </div>
               )}
             </div>
