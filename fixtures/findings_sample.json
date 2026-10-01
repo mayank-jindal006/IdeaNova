@@ -1,0 +1,83 @@
+[
+  {
+    "id": 101, "repo_id": 1, "type": "secret", "rule_id": "aws-access-token",
+    "title": "AWS Access Key committed in source", "severity": "critical",
+    "file_path": "app/config.py", "line": 3, "start_column": 23, "end_column": 43,
+    "commit_sha": "3c251bc", "secret_masked": "AKIA****NRTB",
+    "package": null, "ecosystem": null, "installed_version": null, "fixed_version": null,
+    "in_history_only": false, "confidence": 0.95, "status": "open",
+    "owasp_ids": ["A07:2021"], "asvs_ids": ["V6.4.1"]
+  },
+  {
+    "id": 102, "repo_id": 1, "type": "secret", "rule_id": "generic-api-key",
+    "title": "AWS Secret Access Key committed in source", "severity": "critical",
+    "file_path": "app/config.py", "line": 4, "start_column": 27, "end_column": 59,
+    "commit_sha": "1590238", "secret_masked": "wJal****CYEY",
+    "package": null, "ecosystem": null, "installed_version": null, "fixed_version": null,
+    "in_history_only": false, "confidence": 0.7, "status": "open",
+    "owasp_ids": ["A07:2021"], "asvs_ids": ["V6.4.1"]
+  },
+  {
+    "id": 103, "repo_id": 1, "type": "secret", "rule_id": "generic-api-key",
+    "title": "Database password hardcoded in source", "severity": "high",
+    "file_path": "app/db.py", "line": 5, "start_column": 16, "end_column": 36,
+    "commit_sha": "a7014eb", "secret_masked": "xK9m****c8Yd",
+    "package": null, "ecosystem": null, "installed_version": null, "fixed_version": null,
+    "in_history_only": false, "confidence": 0.65, "status": "open",
+    "owasp_ids": ["A07:2021"], "asvs_ids": ["V6.4.1"]
+  },
+  {
+    "id": 104, "repo_id": 1, "type": "secret", "rule_id": "generic-api-key",
+    "title": "Stripe-style key found in git history only", "severity": "high",
+    "file_path": "app/payments.py", "line": 1, "start_column": 15, "end_column": 61,
+    "commit_sha": "de02c6f", "secret_masked": "sk_test_****9256",
+    "package": null, "ecosystem": null, "installed_version": null, "fixed_version": null,
+    "in_history_only": true, "confidence": 0.6, "status": "needs_rotation",
+    "owasp_ids": ["A07:2021"], "asvs_ids": ["V6.4.1"]
+  },
+  {
+    "id": 105, "repo_id": 2, "type": "secret", "rule_id": "github-pat",
+    "title": "GitHub personal access token committed in source", "severity": "critical",
+    "file_path": "index.js", "line": 6, "start_column": 20, "end_column": 60,
+    "commit_sha": "e91a7c2", "secret_masked": "ghp_****aBcD",
+    "package": null, "ecosystem": null, "installed_version": null, "fixed_version": null,
+    "in_history_only": false, "confidence": 0.95, "status": "open",
+    "owasp_ids": ["A07:2021"], "asvs_ids": ["V6.4.1"]
+  },
+  {
+    "id": 106, "repo_id": 2, "type": "secret", "rule_id": "generic-api-key",
+    "title": "Generic API key in tracked .env file", "severity": "medium",
+    "file_path": ".env", "line": 2, "start_column": 9, "end_column": 41,
+    "commit_sha": "e91a7c2", "secret_masked": "sk_l****9x2Q",
+    "package": null, "ecosystem": null, "installed_version": null, "fixed_version": null,
+    "in_history_only": false, "confidence": 0.55, "status": "open",
+    "owasp_ids": ["A07:2021"], "asvs_ids": ["V6.4.1"]
+  },
+  {
+    "id": 107, "repo_id": 1, "type": "dependency", "rule_id": "CVE-2018-1000656",
+    "title": "Flask 0.12.2 has a known vulnerability", "severity": "high",
+    "file_path": "requirements.txt", "line": 1, "start_column": null, "end_column": null,
+    "commit_sha": "b5f4e21", "secret_masked": null,
+    "package": "Flask", "ecosystem": "PyPI", "installed_version": "0.12.2", "fixed_version": "0.12.3",
+    "in_history_only": false, "confidence": 0.99, "status": "open",
+    "owasp_ids": ["A06:2021"], "asvs_ids": ["V14.2.1"]
+  },
+  {
+    "id": 108, "repo_id": 1, "type": "dependency", "rule_id": "CVE-2020-1747",
+    "title": "PyYAML 5.1 has a known vulnerability", "severity": "critical",
+    "file_path": "requirements.txt", "line": 2, "start_column": null, "end_column": null,
+    "commit_sha": "b5f4e21", "secret_masked": null,
+    "package": "PyYAML", "ecosystem": "PyPI", "installed_version": "5.1", "fixed_version": "5.3.1",
+    "in_history_only": false, "confidence": 0.99, "status": "open",
+    "owasp_ids": ["A06:2021"], "asvs_ids": ["V14.2.1"]
+  },
+  {
+    "id": 109, "repo_id": 2, "type": "dependency", "rule_id": "CVE-2020-8203",
+    "title": "lodash 4.17.15 has a known vulnerability", "severity": "high",
+    "file_path": "package.json", "line": 8, "start_column": null, "end_column": null,
+    "commit_sha": "e91a7c2", "secret_masked": null,
+    "package": "lodash", "ecosystem": "npm", "installed_version": "4.17.15", "fixed_version": "4.17.19",
+    "in_history_only": false, "confidence": 0.99, "status": "open",
+    "owasp_ids": ["A06:2021"], "asvs_ids": ["V14.2.1"]
+  }
+]
