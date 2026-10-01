@@ -59,6 +59,27 @@ class FixStatus(str, enum.Enum):
     rejected = "rejected"
 
 
+class CIStatus(str, enum.Enum):
+    none = "none"
+    pending = "pending"
+    passed = "passed"
+    failed = "failed"
+
+
+class AgentStep(str, enum.Enum):
+    detected = "detected"
+    fix_generated = "fix_generated"
+    skipped = "skipped"
+    pr_opened = "pr_opened"
+    ci_pending = "ci_pending"
+    ci_passed = "ci_passed"
+    ci_failed = "ci_failed"
+    repaired = "repaired"
+    repair_failed = "repair_failed"
+    gave_up = "gave_up"
+    error = "error"
+
+
 class FeedbackVerdict(str, enum.Enum):
     true_positive = "true_positive"
     false_positive = "false_positive"
@@ -71,6 +92,7 @@ class Repo(Base):
     default_branch: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     last_scanned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    auto_fix_enabled: Mapped[bool] = mapped_column(nullable=False, default=False, server_default="false")
     scans: Mapped[list["Scan"]] = relationship(back_populates="repo", cascade="all, delete-orphan")
     findings: Mapped[list["Finding"]] = relationship(back_populates="repo", cascade="all, delete-orphan")
 
@@ -134,6 +156,10 @@ class Fix(Base):
     validation: Mapped[dict] = mapped_column(JSONType, nullable=False)
     pr_url: Mapped[str | None] = mapped_column(String(2048))
     pr_number: Mapped[int | None] = mapped_column(Integer)
+    branch: Mapped[str | None] = mapped_column(String(255))
+    ci_status: Mapped[CIStatus] = mapped_column(Enum(CIStatus, name="ci_status"), nullable=False, default=CIStatus.none, server_default=CIStatus.none.value)
+    repair_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    head_sha: Mapped[str | None] = mapped_column(String(64))
     status: Mapped[FixStatus] = mapped_column(Enum(FixStatus, name="fix_status"), nullable=False, default=FixStatus.generated)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     finding: Mapped[Finding] = relationship(back_populates="fixes")
@@ -160,3 +186,15 @@ class Feedback(Base):
     note: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     finding: Mapped[Finding] = relationship(back_populates="feedback")
+
+
+class AgentRun(Base):
+    __tablename__ = "agent_runs"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    repo_id: Mapped[int] = mapped_column(ForeignKey("repos.id"), nullable=False, index=True)
+    finding_id: Mapped[int | None] = mapped_column(ForeignKey("findings.id"), index=True)
+    fix_id: Mapped[int | None] = mapped_column(ForeignKey("fixes.id"), index=True)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    step: Mapped[AgentStep] = mapped_column(Enum(AgentStep, name="agent_step"), nullable=False)
+    detail: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

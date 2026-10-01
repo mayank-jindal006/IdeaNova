@@ -15,6 +15,11 @@ class RepoOut(BaseModel):
     default_branch: str
     created_at: datetime
     last_scanned_at: datetime | None
+    auto_fix_enabled: bool = False
+
+
+class RepoUpdate(BaseModel):
+    auto_fix_enabled: bool
 
 
 class FindingOut(BaseModel):
@@ -66,6 +71,22 @@ class FixOut(BaseModel):
     edits: list[dict]
     tier: Literal["auto_branch", "pr_review", "flag_only"]
     validation: dict
+    branch: str | None = None
+    ci_status: Literal["none", "pending", "passed", "failed"] = "none"
+    repair_attempts: int = 0
+    head_sha: str | None = None
+
+
+class AgentRunOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    repo_id: int
+    finding_id: int | None
+    fix_id: int | None
+    attempt: int
+    step: Literal["detected", "fix_generated", "skipped", "pr_opened", "ci_pending", "ci_passed", "ci_failed", "repaired", "repair_failed", "gave_up", "error"]
+    detail: str | None
+    created_at: datetime
 
 
 class FeedbackCreate(BaseModel):
