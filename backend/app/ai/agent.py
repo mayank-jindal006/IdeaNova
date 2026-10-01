@@ -352,7 +352,7 @@ def handle_new_findings(db, repo_id: int, finding_ids: list[int]) -> None:
             continue
         if _already_handled(finding):
             continue
-        _log(db, repo_id, "detected", f"{finding.title} in {finding.file_path} line {finding.line}",
+        _log(db, repo_id, "detected", f"{finding.rule_id} in {finding.file_path} line {finding.line}",
              finding_id=finding.id)
         todo.append(finding)
 
