@@ -1,0 +1,35 @@
+[
+  {
+    "id": 1, "repo_id": 1, "type": "secret",
+    "rule_id": "aws-access-token",
+    "title": "AWS Access Key committed in source",
+    "severity": "critical",
+    "file_path": "config.py", "line": 5, "start_column": 22, "end_column": 41,
+    "commit_sha": "a1b2c3d", "secret_masked": "AKIA****2EPF",
+    "package": null, "ecosystem": null, "installed_version": null, "fixed_version": null,
+    "in_history_only": false, "confidence": 0.9, "status": "open",
+    "owasp_ids": ["A07:2021"], "asvs_ids": []
+  },
+  {
+    "id": 2, "repo_id": 1, "type": "secret",
+    "rule_id": "stripe-access-token",
+    "title": "Stripe live secret key committed in source",
+    "severity": "critical",
+    "file_path": "payments.py", "line": 3, "start_column": 19, "end_column": 50,
+    "commit_sha": "a1b2c3d", "secret_masked": "sk_l****gCtj",
+    "package": null, "ecosystem": null, "installed_version": null, "fixed_version": null,
+    "in_history_only": false, "confidence": 0.9, "status": "open",
+    "owasp_ids": ["A07:2021"], "asvs_ids": []
+  },
+  {
+    "id": 3, "repo_id": 1, "type": "secret",
+    "rule_id": "github-pat",
+    "title": "GitHub personal access token committed in source",
+    "severity": "critical",
+    "file_path": "index.js", "line": 5, "start_column": 38, "end_column": 77,
+    "commit_sha": "a1b2c3d", "secret_masked": "ghp_****lgLK",
+    "package": null, "ecosystem": null, "installed_version": null, "fixed_version": null,
+    "in_history_only": false, "confidence": 0.9, "status": "open",
+    "owasp_ids": ["A07:2021"], "asvs_ids": []
+  }
+]
