@@ -10,9 +10,9 @@ import re
 
 from app.ai.llm import LLMError, complete_json
 from app.ai.prompts import SYSTEM_PROMPT, build_user_prompt
-from app.ai.redact import REDACTION_TOKEN, redact
+from app.ai.redact import REDACTION_TOKEN, extract_secret, hide_other_secrets, redact, restore_other_secrets
 from app.ai.tiers import REVIEW_MIN_CONFIDENCE, adjusted_confidence, assign_tier
-from app.ai.validate import passed, validate_fix
+from app.ai.validate import find_secrets, passed, validate_fix
 
 MAX_LINES = 300
 MAX_ATTEMPTS = 2   # first try + one retry with the validation error
@@ -162,10 +162,17 @@ def generate_fix(finding: dict, file_content: str, repo_files: list[str],
         return _flag_only(finding, f"the finding's confidence is low ({confidence}); it may be a false positive "
                                    "(e.g. a dummy value in test code), so no automatic fix was attempted.")
 
+    secret = extract_secret(file_content, finding)   # kept locally, only for validation
     redacted = redact(file_content, finding)
-    if redacted is None:
+    if secret is None or redacted is None:
         # Never send the file if we couldn't hide the secret with certainty.
         return _flag_only(finding, "the secret's exact position could not be confirmed, so the file was not sent to the AI.")
+
+    # Other secrets in the same file (separate findings) must not reach the LLM either.
+    found = find_secrets(finding["file_path"], file_content)
+    if found is None:
+        return _flag_only(finding, "Gitleaks is not available to check the file for other secrets, so it was not sent to the AI.")
+    redacted, others = hide_other_secrets(redacted, [value for value in found if value != secret])
 
     prompt = build_user_prompt(finding, redacted, language, repo_files)
     validation: dict = {}
@@ -175,7 +182,7 @@ def generate_fix(finding: dict, file_content: str, repo_files: list[str],
         except LLMError:
             return _flag_only(finding, "the AI service was not available.")
 
-        problem = _reply_problem(reply)
+        problem = _reply_problem(reply) or _placeholder_problem(reply, redacted, others)
         if problem:
             if attempt < MAX_ATTEMPTS:
                 prompt = _retry_prompt(prompt, [problem])
@@ -185,9 +192,9 @@ def generate_fix(finding: dict, file_content: str, repo_files: list[str],
         main_edit = {
             "file_path": finding["file_path"],
             "original_content": file_content,
-            "new_content": _match_line_endings(reply["new_content"], file_content),
+            "new_content": _match_line_endings(restore_other_secrets(reply["new_content"], others), file_content),
         }
-        validation = validate_fix([main_edit], finding["file_path"])
+        validation = validate_fix([main_edit], finding["file_path"], secret=secret)
         if passed(validation):
             break
         if attempt < MAX_ATTEMPTS:
@@ -213,6 +220,15 @@ def generate_fix(finding: dict, file_content: str, repo_files: list[str],
     tier = assign_tier(finding, main_edit, confidence)
     notes.append(f"Tier {tier}: confidence {confidence}. Nothing is merged automatically.")
     return _fix(finding, reply["explanation"], edits, tier=tier, notes=notes, validation=validation)
+
+
+def _placeholder_problem(reply: dict, redacted: str, others: dict[str, str]) -> str | None:
+    """The LLM must keep every <<OTHER_SECRET_n>> placeholder exactly as often as it appeared."""
+    content = reply.get("new_content") or ""
+    for placeholder in others:
+        if content.count(placeholder) != redacted.count(placeholder):
+            return f"the AI changed {placeholder}, which belongs to a different finding and must stay as it is."
+    return None
 
 
 def _retry_prompt(prompt: str, problems: list[str]) -> str:

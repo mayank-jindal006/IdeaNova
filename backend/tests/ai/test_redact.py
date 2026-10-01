@@ -58,3 +58,17 @@ def test_windows_line_endings_are_kept():
     content = 'x = 1\r\nKEY = "AKIAUJZDEGXDNCF32EPF"\r\ny = 2\r\n'
     finding = {"line": 2, "start_column": 8, "end_column": 27, "secret_masked": "AKIA****2EPF"}
     assert redact(content, finding) == f'x = 1\r\nKEY = "{REDACTION_TOKEN}"\r\ny = 2\r\n'
+
+# ---------- same secret appearing more than once (e.g. password + database URL) ----------
+
+DB_FILE = ('DB_PASSWORD = "xK9mQ2wLp7ZtR5vNc8Yd"\n'
+           '\n'
+           'DATABASE_URL = "postgresql://appuser:xK9mQ2wLp7ZtR5vNc8Yd@db.example.io:5432/appdb"\n')
+DB_FINDING = {"line": 1, "start_column": 16, "end_column": 35, "secret_masked": "xK9m****c8Yd"}
+
+
+def test_every_copy_of_the_secret_is_hidden():
+    result = redact(DB_FILE, DB_FINDING)
+    assert "xK9mQ2wLp7ZtR5vNc8Yd" not in result
+    assert result.count(REDACTION_TOKEN) == 2
+    assert "postgresql://appuser:" + REDACTION_TOKEN + "@db.example.io" in result

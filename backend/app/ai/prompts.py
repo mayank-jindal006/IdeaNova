@@ -23,8 +23,12 @@ RULES
 1. Choose a clear UPPER_SNAKE_CASE environment variable name that describes the secret
    (for example AWS_ACCESS_KEY_ID, STRIPE_SECRET_KEY, GITHUB_TOKEN).
 2. Replace the token (and the quotes around it) with a read of that environment variable.
+   The token can appear MORE THAN ONCE, including inside a larger string such as a database URL.
+   Every occurrence must read the SAME environment variable (e.g. build the URL with an f-string).
 3. Change ONLY what is needed for the fix. Keep every other line exactly as it is:
    same order, same indentation, same comments, same blank lines.
+3b. Placeholders like <<OTHER_SECRET_1>> are OTHER secrets that are fixed separately.
+   Leave every one of them exactly as it is, in the same place. Do not rename, move or remove them.
 4. Never write {REDACTION_TOKEN}, a placeholder secret, or a default value for the secret.
 5. Do not add new libraries (no python-dotenv, no dotenv package).
 6. Return the COMPLETE new file in "new_content", not a diff and not a snippet.
