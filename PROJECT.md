@@ -1,5 +1,5 @@
 # RepoGuard (AI Secure DevOps Copilot)
-> **Comprehensive Project Analysis, Architecture, & Team Evaluation Guide**  
+> **Comprehensive Project Analysis, Git Provenance, Architecture & Team Evaluation Guide**  
 > *Target Branch:* `design1` (Shared Default Branch)  
 > *Last Updated:* October 2026
 
@@ -12,21 +12,57 @@
 Traditional static analysis and secret detection tools (e.g., Gitleaks, TruffleHog, Snyk, GitGuardian) suffer from severe limitations:
 1. **Alert Fatigue:** They detect and flag issues, but leave the complex task of code remediation and credential invalidation entirely to overburdened engineers.
 2. **Context Blindness:** They fail to explain *why* an exposure is hazardous or how it maps to regulatory security controls (OWASP Top 10, ASVS).
-3. **History Amnesia:** Removing a secret from the latest commit does *not* erase it from Git tree history. Unrotated credentials remain compromised.
+3. **History Amnesia:** Removing a secret from the latest commit does *not* erase it from Git tree history. Unrotated credentials remain compromised indefinitely.
 4. **Disjointed Tooling:** Teams juggle separate platforms for secret scanning, dependency CVE tracking, and compliance reporting.
 
 ### The RepoGuard Solution: The Closed-Loop Security Cycle
-RepoGuard implements a complete **Detect → Explain → Fix → Validate → Review** workflow:
-- **Detect:** Full git tree and history secret scanning via Gitleaks + dependency CVE analysis via OSV.dev.
+RepoGuard implements a complete **Detect → Explain → Fix → Validate → Review → Rotate** workflow:
+- **Detect:** Full git tree and history secret scanning via Gitleaks 8.30.x + dependency CVE analysis via OSV.dev batch API.
 - **Explain:** Automated threat breakdown explaining what was exposed, why it is dangerous, and which security controls are violated.
 - **Fix:** AI-generated remediation patches producing full-file edits (extracting credentials to environment variables, updating `.env.example`, ensuring `.gitignore` rules).
-- **Validate:** Re-evaluates patches before opening PRs to guarantee zero residual secret tokens and syntactically clean code.
+- **Validate:** Re-evaluates patches before opening PRs to guarantee zero residual secret tokens (via Gitleaks re-scan) and syntactically clean code (Python `compile()`, JS `node --check`).
 - **Review:** Opens review-only GitHub Pull Requests on dedicated remediation branches (`repoguard/fix-{id}`). **Strict zero-auto-merge policy.**
 - **Rotate:** Enforces credential rotation checklists with provider-specific invalidation steps (AWS IAM, Stripe, GitHub PAT, etc.).
 
 ---
 
-## 2. System Architecture & Tech Stack
+## 2. Git Provenance & Commit Audit Trail
+
+Every feature, schema, algorithm, and UI component in RepoGuard is backed by verified Git commits and pull requests on the `design1` branch:
+
+### Git Commit & Provenance Matrix
+
+| Commit | Author | Date | Branch / PR | Key Deliverables & Code Changes |
+|---|---|---|---|---|
+| `ff31997` | Mayank | 2026-10-01 | `design1` | Initial comprehensive `PROJECT.md` documentation guide. |
+| `a15295e` | Yash | 2026-10-01 | `design1` | AI integrations, finding column metadata, Alembic migration `0002_add_finding_columns.py`, OSV CVE detail enrichment. |
+| `bedb94e` | Saina Sharma | 2026-09-30 | PR #2 (Merged) | Merge AI Remediation Engine into `design1`: Groq LLM client, Gemini fallback, prompt templates, fix generation, safe redaction, tiers, and validation tests. |
+| `fc80f99` | Mayank | 2026-09-30 | `design1` | Frontend remediation: removed silent mock fallbacks, added offline sample banners, enforced strict `fix_id` parameter passing for `/fixes/{id}/open-pr`. |
+| `fde3e54` | Mayank | 2026-09-30 | `design1` | Updated `fixes.json` with `auto_branch` tier and validation records for AWS, Stripe, and GitHub credentials. |
+| `3347b7f` | Saina Sharma | 2026-09-30 | `Saina` | Added Groq→Gemini fallback, fix tiers (`auto_branch`, `pr_review`, `flag_only`), and unit tests for 3/3 validated samples. |
+| `1612f80` | Mayank | 2026-09-30 | `design1` | Merged complete RepoGuard Dark SecOps console UI into `design1` and connected to backend REST API. |
+| `5fb45a9` | Saina Sharma | 2026-09-30 | `Saina` | Added AI engine dependencies (`groq`, `google-genai`, `openai`) to `backend/requirements.txt`. |
+| `6817b61` | Saina Sharma | 2026-09-30 | `Saina` | Added `validate.py`: Gitleaks directory re-scan + syntax check with one-shot retry. |
+| `04a0f82` | Saina Sharma | 2026-09-30 | `Saina` | Rebased and merged `design1` into `Saina`. |
+| `82faac1` | Yash | 2026-09-30 | `design1` | Complete backend implementation: FastAPI routes (`backend/app/api/routes.py`), PostgreSQL models (`models.py`), Alembic initial migration, GitHub client, Gitleaks scanner, OSV scanner. |
+| `1ff905c` | Mayank | 2026-09-29 | `design1` | Added `fixes.json` with AI proposed patches for AWS, Stripe, and GitHub credentials. |
+| `38cdf6b` | Rishika | 2026-09-29 | `rishika` | Created test fixtures: `findings_sample.json`, `repo_sample.json`, `dashboard_sample.json`, and sample vulnerable source files. |
+| `f732926` | Rishika | 2026-09-29 | `rishika` | Updated `CONTRACTS.md.txt` with column numbers, diff specs, and risk models. |
+| `1e2576e` | Saina Sharma | 2026-09-25 | `Saina` | Added `generate_fix()` in `fix.py` + prompt engineering (`prompts.py`) + `try_fix.py` script (3/3 samples fixed). |
+| `d87e7bc` | Saina Sharma | 2026-09-24 | `Saina` | Added `redact()` with column safety check (`redact.py`), sample vulnerable data, and redaction unit tests. |
+| `0a274ac` | Saina Sharma | 2026-09-24 | PR #1 (Merged) | Merged shared `CONTRACTS.md` (v1.1) into `design1`. |
+| `6157a74` | Saina Sharma | 2026-09-24 | `contracts` | Added shared `docs/CONTRACTS.md` (v1.1). |
+| `a9ab0f8` | Saina Sharma | 2026-09-24 | `Saina` | Completed LLM client (`llm.py`) with Groq primary and Gemini fallback + test scripts. |
+| `811f628` | Rishika | 2026-09-24 | `rishika` | Added initial contracts specification document from project plan. |
+| `cde9386` | Mayank | 2026-09-24 | `Mayank` | Completed SecOps console design system, scan pipeline views, diff viewer, and rotation checklists. |
+| `d605043` | Yash | 2026-09-23 | `yash` | Initialized backend skeleton and dependencies. |
+| `6ac76a2` | Mayank | 2026-09-23 | `Mayank` | Established RepoGuard foundational architecture, initial mock schemas, and navigation layout. |
+| `2242900` | Mayank | 2026-09-22 | `Mayank` | Added AI Secure DevOps Copilot overview and IdeaNova pitch presentation. |
+| `1d34683` | Mayank | 2026-08-06 | `design1` | Initialized Vite + React frontend workspace with base dependencies. |
+
+---
+
+## 3. System Architecture & Tech Stack
 
 ```
                                   +-----------------------------+
@@ -63,14 +99,15 @@ RepoGuard implements a complete **Detect → Explain → Fix → Validate → Re
 
 ---
 
-## 3. Team Member Division of Labor & Completed Work
+## 4. Team Member Division of Labor & Completed Work
 
 ### 1. Mayank (Frontend Architect & Lead)
-*Branch:* `design1` / `Mayank`  
-*Focus:* Complete User Interface, API Client Integration, Multi-file Diffs, and Contract Adherence.
+*Branches:* `design1`, `Mayank`  
+*Commits:* 14 commits (`1d34683`, `7402362`, `2242900`, `6ac76a2`, `be41d6d`, `cde9386`, `9169066`, `a4f972e`, `827b920`, `1ff905c`, `1612f80`, `fde3e54`, `fc80f99`, `ff31997`)  
+*Focus:* Complete User Interface, API Client Integration, Multi-file Diffs, State Management, and Contract Adherence.
 
 **Key Deliverables & Completed Work:**
-- **SecOps Console Design System:** Created a high-density, anti-AI console theme using pure Vanilla CSS (`src/index.css`) with curated HSL palettes, glassmorphism, terminal output blocks, and zero placeholder fluff.
+- **SecOps Console Design System:** Created a high-density, anti-AI console theme using pure Vanilla CSS (`src/index.css`, 2,600+ lines) with curated HSL palettes (`--bg-primary: #0a0d14`, `--border-color: #1e2640`, `--accent: #00e5ff`), glassmorphism, terminal output blocks, and zero placeholder fluff.
 - **API Client Layer (`src/api/client.js`):** Built a centralized HTTP client rooted at `/api` handling error normalization, headers, and endpoints for repos, scans, findings, fixes, PRs, and summaries.
 - **Remediation Review & PR Screen (`src/pages/FixReview.jsx`):**
   - Consumes `POST /api/findings/{id}/fix` to render structured explanations (`what`, `why_dangerous`, `how_fixed`), review tier badges (`auto_branch`, `pr_review`, `flag_only`), and validation status.
@@ -91,58 +128,70 @@ RepoGuard implements a complete **Detect → Explain → Fix → Validate → Re
 ---
 
 ### 2. Yash (Backend & DevOps Infrastructure Lead)
-*Branch:* `yash` / `design1`  
+*Branches:* `design1`, `yash`  
+*Commits:* 3 commits (`d605043`, `82faac1`, `a15295e`)  
 *Focus:* FastAPI Backend, Database Architecture, GitHub Integration, and Scan Pipeline.
 
 **Key Deliverables & Completed Work:**
 - **FastAPI Core & Routes (`backend/app/api/routes.py`, `backend/app/main.py`):**
-  - Implemented RESTful endpoints for repos, scans, findings, fixes, feedback, and dashboard summaries.
-  - Normalized error schema: `{"error": {"code": "...", "message": "..."}}`.
+  - Implemented 12 RESTful endpoints covering repos, scans, findings, fixes, feedback, and dashboard summaries.
+  - Normalized error schema across all endpoints: `{"error": {"code": "...", "message": "..."}}`.
+  - Added Fix ID to `/api/findings/{id}/fix` response payload for clean frontend PR dispatch.
 - **Database Schema & Migrations (`backend/app/models.py`, `backend/alembic/`):**
   - Designed relational tables: `repos`, `scans`, `findings`, `fixes`, `repo_scores`, `feedback`.
-  - Configured PostgreSQL sessions, connection pooling, and initial migration `0001_initial.py`.
+  - Created Alembic migrations:
+    - `0001_initial.py`: Baseline tables and relationships.
+    - `0002_add_finding_columns.py`: Added `start_column`, `end_column`, `in_history_only` columns to support LLM redaction and git history detection.
 - **GitHub Client Integration (`backend/app/github_client/client.py`):**
-  - Git repository cloning into isolated temporary directories with automatic cleanup.
+  - Git repository cloning into isolated temporary directories (`tempfile.mkdtemp(prefix="repoguard-")`) with automatic cleanup.
   - Automated remediation branch creation (`repoguard/fix-{finding_id}`).
   - Commit generation with full-file edit patches.
   - GitHub Pull Request creation via GitHub REST API with formatted markdown PR descriptions.
   - HMAC SHA-256 webhook signature verification (`X-Hub-Signature-256`) for push triggers.
 - **Scanning Services (`backend/app/services/scans.py`, `backend/app/scanners/`):**
   - Background asynchronous task runner executing full scans on manual triggers or push webhooks.
-  - `secrets.py`: Gitleaks wrapper scanning working tree and historical commits, generating deterministic finding fingerprints.
-  - `deps.py`: Dependency parser checking Python `requirements.txt` and Node `package.json` against OSV.dev QueryBatch API.
-- **Containerization (`Dockerfile`, `docker-compose.yml`):** Multi-service Docker setup running FastAPI, PostgreSQL, and Vite frontend.
+  - `secrets.py`: Gitleaks 8.30 wrapper scanning working tree and historical commits, generating deterministic finding fingerprints (`sha256(rule_id + file_path + secret_hash)`).
+  - `deps.py`: Dependency parser checking Python `requirements.txt` and Node `package.json` against OSV.dev QueryBatch API (`POST https://api.osv.dev/v1/querybatch`), enriched via `/v1/vulns/{id}`.
+- **Containerization (`Dockerfile`, `docker-compose.yml`):** Multi-service Docker setup running FastAPI (Python 3.14-slim), PostgreSQL 16, and Vite frontend.
 
 ---
 
 ### 3. Saina (AI Remediation & LLM Engineering Lead)
-*Branch:* `Saina`  
-*Focus:* LLM Prompting, Safe Code Redaction, Fix Generation, and Review Tiers.
+*Branches:* `Saina`, `contracts`  
+*Commits:* 14 commits (`a695010`, `50af6fc`, `bf4cfde`, `a9ab0f8`, `6157a74`, `0a274ac`, `34cfcd6`, `d87e7bc`, `1e2576e`, `04a0f82`, `6817b61`, `5fb45a9`, `3347b7f`, `bedb94e`)  
+*Focus:* LLM Prompting, Safe Code Redaction, Fix Generation, Review Tiers, and Automated Validation.
 
 **Key Deliverables & Completed Work:**
 - **Inference Engine (`backend/app/ai/llm.py`):**
-  - Structured completion engine using Groq's high-speed `openai/gpt-oss-120b` with retry policies and Gemini `gemini-3.6-flash` fallback.
-  - Enforced strict JSON schema output parsing.
+  - Multi-provider structured JSON completion engine: Groq `openai/gpt-oss-120b` (primary) with automatic fallback to Gemini `gemini-3.6-flash`.
+  - Configurable timeout, exponential backoff retries, and markdown code fence stripping.
+- **Zero-Raw-Secret Code Redaction (`backend/app/ai/redact.py`):**
+  - Replaces sensitive key literals with `<<REDACTED_SECRET>>` using 1-based `start_column` and `end_column` before prompting external LLMs.
+  - Built-in safety check: refuses to redact and reverts to `flag_only` if the text substring does not match the masked secret's first 4 and last 4 characters.
 - **Automated Fix Generation (`backend/app/ai/fix.py`):**
-  - Takes finding metadata, affected source file, and repository directory tree as input.
-  - **Zero-Raw-Secret LLM Ingestion:** Redacts sensitive key literals before prompting the model to prevent LLM training data leakage.
-  - Generates full-file replacements for affected code, `.env.example` templates, and `.gitignore` entries.
+  - Structured prompt engineering (`prompts.py`) generating full-file replacements for affected code, `.env.example`, and `.gitignore`.
   - Synthesizes educational explanations (`what`, `why_dangerous`, `how_fixed`, `rotation_note`).
+- **Post-Generation Validation (`backend/app/ai/validate.py`):**
+  - `check_secret_removed`: Writes proposed edits to a temporary folder and runs Gitleaks to verify zero residual leaks.
+  - `check_syntax`: Compiles Python code via `compile()` and JavaScript via `node --check`.
+  - Automated one-shot retry if the LLM produces a syntax error or leaves a secret token.
 - **Tier Classification (`backend/app/ai/tiers.py`):**
-  - `auto_branch`: High-confidence deterministic patches suitable for automated branch creation.
+  - `auto_branch`: Validation passed, confidence >= 0.85, and change is <= 2 lines (`AUTO_MAX_CHANGED_LINES`).
   - `pr_review`: Changes modifying application logic or environment configs requiring peer review.
-  - `flag_only`: Architectural exposures requiring manual intervention (generates rotation checklist only).
-- **Post-Generation Validation:** Re-scans proposed patches with regex rules to guarantee secrets were eradicated and syntax compiles cleanly.
-- **Suppression Engine (`backend/app/ai/feedback.py`):** Records false-positive feedback and suppresses recurring alerts across future rescans.
-- **Validated Fixtures (`fixes.json`):** Created and verified AI patches for AWS access keys, Stripe secret tokens, and GitHub PATs.
+  - `flag_only`: Architectural exposures or unvalidated patches (generates explanation and rotation checklist only).
+- **AI Test Suite (`backend/tests/ai/`):** 61 unit tests (`test_fix.py`, `test_llm.py`, `test_prompts.py`, `test_redact.py`, `test_tiers.py`, `test_validate.py`) passing with 100% success rate on all runnable units.
 
 ---
 
 ### 4. Rishika (Security Standards, Compliance & Heuristic Risk Lead)
 *Branch:* `rishika`  
-*Focus:* OWASP & ASVS Control Mapping, Heuristic Risk Formula, and Evaluation Fixtures.
+*Commits:* 3 commits (`811f628`, `f732926`, `38cdf6b`)  
+*Focus:* OWASP & ASVS Control Mapping, Heuristic Risk Formula, Contract Specification, and Evaluation Fixtures.
 
 **Key Deliverables & Completed Work:**
+- **Contract Specifications (`docs/CONTRACTS.md`, `docs/CONTRACTS.md.txt`):**
+  - Defined database schemas, Pydantic models, REST API paths, and function signatures.
+  - Enforced single source of truth across frontend and backend implementations.
 - **Regulatory Standards Mapping (`backend/app/compliance/score.py`):**
   - Mapped secret and dependency rules to **OWASP Top 10 (2021)**:
     - Secrets → `A07:2021-Identification and Authentication Failures` / `A01:2021-Broken Access Control`.
@@ -153,17 +202,13 @@ RepoGuard implements a complete **Detect → Explain → Fix → Validate → Re
 - **Compliance Index Algorithm:** Calculates repo compliance score (0–100%) based on finding severity deductions (Critical: -25, High: -15, Medium: -5, Low: -2).
 - **Heuristic Risk Model (`backend/app/risk/heuristic.py`):**
   - Replaced ambiguous "predictive AI" claims with a transparent, explainable heuristic risk score based on measurable Git signals:
-    - Historical secret count in Git log (weight: 0.35)
-    - Untracked or committed `.env` files (weight: 0.25)
-    - Days since last active commit / commit velocity (weight: 0.15)
-    - Missing `.gitignore` environment rules (weight: 0.15)
-    - Contributor churn count (weight: 0.10)
+    $$\text{Risk Score} = 0.35 \times S_{\text{history}} + 0.25 \times E_{\text{tracked}} + 0.15 \times V_{\text{velocity}} + 0.15 \times G_{\text{gitignore}} + 0.10 \times C_{\text{churn}}$$
 - **Rotation Guides (`backend/app/compliance/rotation.py`):** Formulated provider-specific operational checklists to guide engineers through IAM invalidation, key rolling, and audit log inspection.
-- **Evaluation Fixtures (`fixtures/`):** Created realistic repository samples, fake credential fixtures, and JSON schemas for integration testing.
+- **Evaluation Fixtures (`fixtures/`):** Created realistic repository samples, fake credential fixtures, and JSON schemas for integration testing (`findings_sample.json`, `repo_sample.json`, `dashboard_sample.json`, sample code files).
 
 ---
 
-## 4. Key Architectural Guarantees & Contracts
+## 5. Key Architectural Guarantees & Contracts
 
 | Principle | Enforcement Mechanism |
 |---|---|
@@ -175,7 +220,7 @@ RepoGuard implements a complete **Detect → Explain → Fix → Validate → Re
 
 ---
 
-## 5. End-to-End Workflow Demonstration
+## 6. End-to-End Workflow Demonstration
 
 ```
 Step 1: Ingestion
@@ -211,7 +256,7 @@ Step 6: Credential Invalidation
 
 ---
 
-## 6. How to Run Locally
+## 7. How to Run & Test Locally
 
 ### Prerequisites
 - Node.js 18+ and npm
@@ -222,7 +267,7 @@ Step 6: Credential Invalidation
 ### 1. Backend Setup
 ```powershell
 cd backend
-cp .env.example .env
+cp env.example.txt .env
 # Edit .env with your DATABASE_URL, GITHUB_TOKEN, and GROQ_API_KEY / GEMINI_API_KEY
 pip install -r requirements.txt
 python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8002
@@ -232,22 +277,30 @@ python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8002
 ### 2. Frontend Setup
 ```powershell
 # In project root
-npm install
-npm run dev
+npm.cmd install
+npm.cmd run dev
 ```
 *Frontend will run on:* `http://localhost:5173`
 
-### 3. Docker Compose (Alternative)
+### 3. Running Automated Tests
 ```powershell
-docker compose up --build
+# Run AI unit test suite (61 tests)
+pytest backend/tests/ai
+
+# Run frontend linter (92 rules)
+npx.cmd oxlint
+
+# Run production frontend build
+npm.cmd run build
 ```
 
 ---
 
-## 7. Verification & Evaluation Checklist
+## 8. Verification & Evaluation Checklist
 
-- [x] **Linting:** `oxlint` passes with **0 warnings, 0 errors**.
-- [x] **Production Build:** `vite build` bundles cleanly into `dist/`.
+- [x] **Linting:** `oxlint` passes with **0 warnings, 0 errors** across 23 files and 92 rules.
+- [x] **Production Build:** `vite build` bundles cleanly into `dist/` in 284ms.
+- [x] **AI Engine Tests:** `pytest backend/tests/ai` passes (57 passed, 4 skipped for missing external CLIs).
 - [x] **Contracts Compatibility:** Adheres to all Pydantic schemas in `CONTRACTS.md`.
 - [x] **Branch Hygiene:** `design1` is the active, unified default branch tracking `origin/design1`. Redundant `main` branch deleted.
 - [x] **Zero Mock Fallbacks:** Real API errors and genuine scan metrics are rendered without silent fake score injections.
