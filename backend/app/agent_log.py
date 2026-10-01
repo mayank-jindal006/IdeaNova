@@ -13,6 +13,7 @@ def record_agent_run(
     step: str = "",
     status: str = "",
     detail: str = "",
+    attempt: int = 0,
 ) -> AgentRun:
     """Add an agent event to the caller's transaction without committing it."""
     run = AgentRun(
@@ -22,6 +23,7 @@ def record_agent_run(
         step=step,
         status=status,
         detail=detail,
+        attempt=attempt,
     )
     db.add(run)
     return run

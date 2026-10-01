@@ -259,6 +259,13 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks, db
         full_name = body.get("repository", {}).get("full_name")
         repo = db.scalar(select(Repo).where(Repo.full_name == full_name))
         if repo:
+            branch = body.get("ref", "").removeprefix("refs/heads/")
+            if branch.startswith("repoguard/fix-"):
+                fix = db.scalar(select(Fix).where(Fix.branch == branch))
+                if fix:
+                    fix.head_sha = body.get("after")
+                    db.commit()
+                return {"ok": True}
             scan = Scan(repo_id=repo.id, trigger=ScanTrigger.push, commit_sha=body.get("after"), status=ScanStatus.queued)
             db.add(scan)
             db.commit()
@@ -286,11 +293,6 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks, db
                 workflow_sha = workflow_run.get("head_sha")
                 if not workflow_sha or workflow_sha != fix.head_sha:
                     return {"ok": True}
-                fix.ci_status = CIStatus.passed if conclusion == "success" else CIStatus.failed
-                record_agent_run(db, fix.finding.repo_id, finding_id=fix.finding_id, fix_id=fix.id,
-                                 step="ci_passed" if conclusion == "success" else "ci_failed",
-                                 status=conclusion, detail=f"GitHub Actions conclusion: {conclusion}")
-                db.commit()
                 background_tasks.add_task(_handle_ci_result, fix.id, conclusion, workflow_run.get("id"), fix.finding.repo.full_name)
     return {"ok": True}
 
