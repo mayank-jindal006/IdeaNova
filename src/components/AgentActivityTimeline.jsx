@@ -92,70 +92,6 @@ const STEP_CONFIG = {
   }
 };
 
-// Deterministic mock session for offline demonstration & fallback
-const DEMO_RUNS = [
-  {
-    id: 1,
-    repo_id: 1,
-    finding_id: 101,
-    fix_id: 5,
-    attempt: 0,
-    step: 'detected',
-    detail: 'Rule: aws-access-token · File: app/config.py:12 · Masked: AKIA****WXYZ',
-    created_at: new Date(Date.now() - 420000).toISOString()
-  },
-  {
-    id: 2,
-    repo_id: 1,
-    finding_id: 101,
-    fix_id: 5,
-    attempt: 0,
-    step: 'fix_generated',
-    detail: 'Extracted key to os.getenv("AWS_ACCESS_KEY_ID"), created .env.example, updated .gitignore',
-    created_at: new Date(Date.now() - 360000).toISOString()
-  },
-  {
-    id: 3,
-    repo_id: 1,
-    finding_id: 101,
-    fix_id: 5,
-    attempt: 0,
-    step: 'pr_opened',
-    detail: 'Opened PR #42 on branch repoguard/fix-101 into default branch main',
-    created_at: new Date(Date.now() - 300000).toISOString()
-  },
-  {
-    id: 4,
-    repo_id: 1,
-    finding_id: 101,
-    fix_id: 5,
-    attempt: 1,
-    step: 'ci_failed',
-    detail: 'tests failed: NameError: name \'os\' is not defined in app/config.py at line 14: os.getenv("AWS_ACCESS_KEY_ID")',
-    created_at: new Date(Date.now() - 180000).toISOString()
-  },
-  {
-    id: 5,
-    repo_id: 1,
-    finding_id: 101,
-    fix_id: 5,
-    attempt: 1,
-    step: 'repaired',
-    detail: 'Self-healing agent extracted CI failure log, added "import os" at top of app/config.py, verified syntax, and pushed commit b2c3d4e to repoguard/fix-101',
-    created_at: new Date(Date.now() - 90000).toISOString()
-  },
-  {
-    id: 6,
-    repo_id: 1,
-    finding_id: 101,
-    fix_id: 5,
-    attempt: 1,
-    step: 'ci_passed',
-    detail: 'Workflow #108 completed with conclusion: success. All 18 unit tests passed on repoguard/fix-101.',
-    created_at: new Date(Date.now() - 25000).toISOString()
-  }
-];
-
 export const AgentActivityTimeline = ({
   repoId,
   findingId = null,
@@ -165,13 +101,14 @@ export const AgentActivityTimeline = ({
 }) => {
   const [runs, setRuns] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [errorText, setErrorText] = useState(null);
   const [isPolling, setIsPolling] = useState(true);
-  const [isDemoMode, setIsDemoMode] = useState(false);
   const [filterStep, setFilterStep] = useState('all');
   const timerRef = useRef(null);
 
   const fetchRuns = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
+    setErrorText(null);
     try {
       const data = await api.getAgentRuns({
         repo_id: repoId,
@@ -179,18 +116,14 @@ export const AgentActivityTimeline = ({
         fix_id: fixId
       });
 
-      if (Array.isArray(data) && data.length > 0) {
+      if (Array.isArray(data)) {
         setRuns(data);
-        setIsDemoMode(false);
       } else {
-        // If API returned empty array, use demo dataset for immediate demonstration
-        setRuns(DEMO_RUNS);
-        setIsDemoMode(true);
+        setRuns([]);
       }
-    } catch {
-      // Backend endpoint might not be deployed yet, fall back to demonstration data
-      setRuns(DEMO_RUNS);
-      setIsDemoMode(true);
+    } catch (err) {
+      setErrorText(err.message || 'Could not load agent activity');
+      setRuns([]);
     } finally {
       if (!silent) setLoading(false);
     }
@@ -284,20 +217,42 @@ export const AgentActivityTimeline = ({
         </div>
       </div>
 
-      {isDemoMode && (
-        <div className="timeline-demo-notice">
-          <span className="badge badge-warning text-xs">Offline Telemetry Session</span>
-          <span className="demo-notice-text text-xs text-secondary">
-            Displaying live simulated self-healing trace (CI Failure Log Inspection → Auto-Repair → Green CI).
-          </span>
+      {/* Error state with Retry */}
+      {errorText && (
+        <div className="panel-box error-alert-box m-3" style={{ padding: '12px 16px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <AlertTriangleIcon size={16} className="text-danger" />
+              <span className="text-sm font-bold text-danger">Could not load agent activity</span>
+            </div>
+            <button
+              type="button"
+              className="btn-secondary btn-xs"
+              onClick={() => fetchRuns(false)}
+            >
+              <RefreshCwIcon size={11} style={{ marginRight: '4px' }} />
+              <span>Retry</span>
+            </button>
+          </div>
+          <p className="text-xs text-secondary mt-1 mb-0">{errorText}</p>
         </div>
       )}
 
       {/* Timeline Steps Stream */}
       <div className="timeline-body">
-        {filteredRuns.length === 0 ? (
-          <div className="timeline-empty text-center text-muted p-4">
-            No agent run events recorded matching the current filter.
+        {loading && runs.length === 0 ? (
+          <div className="text-center p-4 text-secondary text-sm">
+            <RefreshCwIcon size={16} className="spin-icon text-muted" style={{ marginRight: '8px' }} />
+            <span>Loading agent activity...</span>
+          </div>
+        ) : filteredRuns.length === 0 && !errorText ? (
+          <div className="timeline-empty text-center p-4">
+            <p style={{ margin: '0 0 4px', fontWeight: 600, color: 'var(--text-primary)' }}>
+              No agent activity yet
+            </p>
+            <p className="text-xs text-secondary" style={{ margin: 0 }}>
+              Runs will appear here automatically when security scans or push events trigger self-healing remediation.
+            </p>
           </div>
         ) : (
           <div className="timeline-stream">

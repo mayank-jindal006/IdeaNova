@@ -330,9 +330,9 @@ export const RepositoryDetail = () => {
                           <td>
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignItems: 'flex-start' }}>
                               <StatusChip status={finding.status} />
-                              {(finding.status === 'pr_opened' || finding.ci_status) && (
+                              {finding.ci_status && (
                                 <CIStatusBadge
-                                  status={finding.ci_status || (finding.status === 'pr_opened' ? 'passed' : 'none')}
+                                  status={finding.ci_status}
                                   size="sm"
                                 />
                               )}

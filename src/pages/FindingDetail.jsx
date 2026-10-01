@@ -402,7 +402,7 @@ export const FindingDetail = () => {
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
                     <span className="text-xs text-secondary">CI Workflow Status:</span>
                     <CIStatusBadge
-                      status={finding.latest_fix.ci_status || (finding.status === 'pr_opened' ? 'passed' : 'none')}
+                      status={finding.latest_fix.ci_status || 'none'}
                       repairAttempts={finding.latest_fix.repair_attempts || 0}
                       size="sm"
                     />
