@@ -16,6 +16,7 @@ Safety rules (section 8.4) enforced here:
   * a repair only changes the affected file; it is always tier pr_review (a human merges)
   * a repair that adds a secret, breaks syntax or rewrites too much is rejected (flag_only)
 """
+import inspect
 import logging
 import re
 from pathlib import Path
@@ -252,6 +253,7 @@ def repair_fix(finding: dict, files: dict[str, str], ci_errors: list[str], repo_
 # ---------------------------------------------------------------------------
 
 logger = logging.getLogger("repoguard.agent")
+_FAILED_STEPS = {"ci_failed", "repair_failed", "gave_up", "error"}
 BRANCH_PREFIX = "repoguard/fix-"
 SUPPORT_FILES = (".gitignore", ".env.example")
 NEEDS_HUMAN = ("RepoGuard could not make CI pass on this fix automatically, so it stopped trying. "
@@ -274,7 +276,13 @@ def _log(db, repo_id: int, step: str, detail: str, finding_id: int | None = None
         logger.info("agent %s repo=%s finding=%s fix=%s attempt=%s: %s",
                     step, repo_id, finding_id, fix_id, attempt, detail)
         return
-    record_agent_run(db, repo_id, step, detail, finding_id=finding_id, fix_id=fix_id, attempt=attempt)
+    params = inspect.signature(record_agent_run).parameters
+    kwargs = {"step": step, "detail": detail, "finding_id": finding_id, "fix_id": fix_id}
+    if "attempt" in params:
+        kwargs["attempt"] = attempt
+    if "status" in params:
+        kwargs["status"] = "failed" if step in _FAILED_STEPS else "ok"
+    record_agent_run(db, repo_id, **kwargs)   # keywords only: works whatever the argument order is
     db.commit()   # record_agent_run only adds the row; commit so a later rollback can't lose it
 
 
@@ -288,10 +296,9 @@ def _finding_dict(finding) -> dict:
     return FindingOut.model_validate(finding).model_dump(mode="json")
 
 
-def _ci(status: str):
-    """CIStatus enum member if the model has it, else the plain string (tests / older models)."""
-    enum = getattr(_models(), "CIStatus", None)
-    return enum(status) if enum else status
+def _ci(status: str) -> str:
+    """fixes.ci_status is stored as text: "none" | "pending" | "passed" | "failed"."""
+    return status
 
 
 def _value(x):
@@ -392,7 +399,12 @@ def _fix_one(db, gh, repo, finding, clone_path: str) -> None:
             return
 
         opened = gh.open_fix_pr(db, fix.id)   # creates repoguard/fix-<finding_id>, sets branch
-        pr_url = opened["pr_url"] if isinstance(opened, dict) else opened[0]
+        if isinstance(opened, dict):
+            pr_url = opened["pr_url"]
+        elif isinstance(opened, (tuple, list)):
+            pr_url = opened[0]
+        else:   # the Fix object itself
+            pr_url = getattr(opened, "pr_url", None) or fix.pr_url
         fix.ci_status = _ci("pending")
         db.commit()
         _log(db, repo.id, "pr_opened", pr_url, finding_id=finding.id, fix_id=fix.id)

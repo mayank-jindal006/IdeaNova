@@ -291,10 +291,12 @@ def real_db(monkeypatch):
 
 
 def _real_gh(gh_calls):
-    def open_fix_pr(db, fix_id):   # Yash's real one returns a dict and sets branch
+    def open_fix_pr(db, fix_id):   # like Yash's: sets branch/head_sha, commits, returns the Fix
         fix = db.get(models.Fix, fix_id)
         fix.branch, fix.pr_url, fix.pr_number = f"repoguard/fix-{fix.finding_id}", "https://pr/7", 7
-        return {"pr_url": "https://pr/7", "pr_number": 7}
+        fix.head_sha = "sha-1"
+        db.commit()
+        return fix
     return SimpleNamespace(
         clone_repo=lambda name: "/fake", cleanup_clone=lambda path: None, open_fix_pr=open_fix_pr,
         get_branch_files=lambda name, branch, paths: {p: "KEY = os.getenv('K')\n" for p in paths},
@@ -311,14 +313,31 @@ def test_full_loop_on_real_models(real_db, monkeypatch):
 
     agent.handle_new_findings(db, repo.id, [finding.id])
     fix = db.query(models.Fix).one()
-    assert fix.branch == f"repoguard/fix-{finding.id}" and fix.ci_status == models.CIStatus.pending
+    assert fix.branch == f"repoguard/fix-{finding.id}" and fix.ci_status == "pending"
 
     agent.handle_ci_result(db, fix.id, "failure", LOG)
     agent.handle_ci_result(db, fix.id, "success", "")
     db.expire_all()
     fix = db.get(models.Fix, fix.id)
-    assert fix.ci_status == models.CIStatus.passed and fix.repair_attempts == 1
-    runs = [r.step.value for r in db.query(models.AgentRun).order_by(models.AgentRun.id)]
+    assert fix.ci_status == "passed" and fix.repair_attempts == 1
+    runs = [getattr(r.step, "value", r.step) for r in db.query(models.AgentRun).order_by(models.AgentRun.id)]
     assert runs == ["detected", "fix_generated", "pr_opened", "ci_pending", "ci_failed", "repaired", "ci_passed"]
-    assert db.query(models.AgentRun).filter_by(step=models.AgentStep.pr_opened).one().detail == "https://pr/7"
+    assert db.query(models.AgentRun).filter_by(step="pr_opened").one().detail == "https://pr/7"
     assert [name for name, _ in gh_calls] == ["push", "comment"]
+
+@pytest.mark.parametrize("signature", ["contract", "yash"])
+def test_log_works_with_both_record_agent_run_signatures(monkeypatch, signature):
+    """record_agent_run's argument order changed once; the agent passes keywords only."""
+    import sys
+    import types
+    seen = {}
+    if signature == "contract":
+        def record(db, repo_id, step, detail, finding_id=None, fix_id=None, attempt=0):
+            seen.update(step=step, detail=detail, attempt=attempt)
+    else:
+        def record(db, repo_id, finding_id=None, fix_id=None, step="", status="", detail=""):
+            seen.update(step=step, detail=detail, status=status)
+    monkeypatch.setitem(sys.modules, "app.agent_log", types.SimpleNamespace(record_agent_run=record))
+    agent._log(FakeDB(), 1, "gave_up", "CI still fails", finding_id=1, fix_id=2, attempt=2)
+    assert seen["step"] == "gave_up" and seen["detail"] == "CI still fails"
+    assert seen.get("attempt", 2) == 2 and seen.get("status", "failed") == "failed"
