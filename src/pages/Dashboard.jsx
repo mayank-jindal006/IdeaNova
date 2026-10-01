@@ -1,37 +1,51 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { useRepoGuard } from '../context/RepoGuardContext';
-import SeverityBadge from '../components/SeverityBadge';
-import StatusChip from '../components/StatusChip';
+import api from '../api/client';
 import Header from '../components/Header';
 import {
   RepoIcon,
   AlertTriangleIcon,
-  KeyIcon,
   CheckCircleIcon,
-  PlusIcon
+  PlusIcon,
+  RefreshCwIcon
 } from '../components/icons';
-import {
-  calculateComplianceScore,
-  calculateHeuristicRisk
-} from '../services/repoGuardService';
 
 export const Dashboard = () => {
-  const { repositories, findings, activities, metrics } = useRepoGuard();
+  const [summary, setSummary] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [errorText, setErrorText] = useState(null);
 
-  // Urgent findings requiring direct attention (Critical/High severity & Open or Needs Rotation)
-  const urgentFindings = findings.filter(
-    f => ['critical', 'high'].includes(f.severity) && ['open', 'needs_rotation'].includes(f.status)
-  ).slice(0, 5);
+  useEffect(() => {
+    let isMounted = true;
+    async function loadSummary() {
+      setLoading(true);
+      setErrorText(null);
+      try {
+        const data = await api.getDashboardSummary();
+        if (isMounted) setSummary(data);
+      } catch (err) {
+        if (!isMounted) return;
+        setErrorText(err.message || 'Failed to connect to RepoGuard Security API.');
+        setSummary(null);
+      } finally {
+        if (isMounted) setLoading(false);
+      }
+    }
 
-  // Grouped active findings count by severity
-  const activeFindings = findings.filter(f => !['fixed', 'false_positive'].includes(f.status));
-  const sevCounts = {
-    critical: activeFindings.filter(f => f.severity === 'critical').length,
-    high: activeFindings.filter(f => f.severity === 'high').length,
-    medium: activeFindings.filter(f => f.severity === 'medium').length,
-    low: activeFindings.filter(f => f.severity === 'low').length,
-  };
+    loadSummary();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  const totals = summary?.totals || { repos: 0, findings: 0 };
+  const sev = summary?.severity_counts || { critical: 0, high: 0, medium: 0, low: 0 };
+  const repoScores = summary?.repo_scores || [];
+  const trend = summary?.trend || [];
+
+  const avgCompliance = repoScores.length > 0
+    ? Math.round(repoScores.reduce((acc, r) => acc + (r.compliance_score || 0), 0) / repoScores.length)
+    : null;
 
   return (
     <div className="dashboard-page">
@@ -48,6 +62,24 @@ export const Dashboard = () => {
       />
 
       <div className="page-content-padded">
+        {/* Error notification if any */}
+        {errorText && (
+          <div className="panel-box error-alert-box mb-4">
+            <div className="alert-top">
+              <AlertTriangleIcon size={18} className="text-danger" />
+              <h3 className="alert-title">Backend API Notice</h3>
+            </div>
+            <p className="alert-message">{errorText}</p>
+          </div>
+        )}
+
+        {loading && (
+          <div className="text-center py-4 mb-4">
+            <RefreshCwIcon size={20} className="spin-icon text-secondary" />
+            <span className="text-secondary ml-2">Loading security summary...</span>
+          </div>
+        )}
+
         {/* KPI Summary Cards */}
         <div className="kpi-grid">
           <div className="kpi-card">
@@ -55,41 +87,41 @@ export const Dashboard = () => {
               <span className="kpi-label">Monitored Repos</span>
               <RepoIcon size={16} className="text-secondary" />
             </div>
-            <span className="kpi-value text-mono">{metrics.totalRepos}</span>
-            <span className="kpi-meta text-muted">All branches tracked</span>
+            <span className="kpi-value text-mono">{totals.repos}</span>
+            <span className="kpi-meta text-muted">All active branches</span>
           </div>
 
           <div className="kpi-card">
             <div className="kpi-top">
-              <span className="kpi-label">Open Findings</span>
-              <AlertTriangleIcon size={16} className={metrics.openFindingsCount > 0 ? "text-danger" : "text-muted"} />
+              <span className="kpi-label">Total Findings</span>
+              <AlertTriangleIcon size={16} className={totals.findings > 0 ? "text-danger" : "text-muted"} />
             </div>
-            <span className={`kpi-value text-mono ${metrics.openFindingsCount > 0 ? 'text-danger' : 'text-primary'}`}>
-              {metrics.openFindingsCount}
+            <span className={`kpi-value text-mono ${totals.findings > 0 ? 'text-danger' : 'text-primary'}`}>
+              {totals.findings}
             </span>
-            <span className="kpi-meta text-muted">Requires remediation</span>
+            <span className="kpi-meta text-muted">Detected exposures</span>
           </div>
 
           <div className="kpi-card">
             <div className="kpi-top">
-              <span className="kpi-label">Critical Exposures</span>
-              <AlertTriangleIcon size={16} className={metrics.criticalFindingsCount > 0 ? "text-danger" : "text-muted"} />
+              <span className="kpi-label">Critical Severity</span>
+              <AlertTriangleIcon size={16} className={sev.critical > 0 ? "text-danger" : "text-muted"} />
             </div>
-            <span className={`kpi-value text-mono ${metrics.criticalFindingsCount > 0 ? 'text-danger' : 'text-success'}`}>
-              {metrics.criticalFindingsCount}
+            <span className={`kpi-value text-mono ${sev.critical > 0 ? 'text-danger' : 'text-success'}`}>
+              {sev.critical}
             </span>
-            <span className="kpi-meta text-muted">Immediate risk</span>
+            <span className="kpi-meta text-muted">Immediate action required</span>
           </div>
 
           <div className="kpi-card">
             <div className="kpi-top">
-              <span className="kpi-label">Needs Rotation</span>
-              <KeyIcon size={16} className={metrics.needsRotationCount > 0 ? "text-warning" : "text-muted"} />
+              <span className="kpi-label">High Severity</span>
+              <AlertTriangleIcon size={16} className={sev.high > 0 ? "text-warning" : "text-muted"} />
             </div>
-            <span className={`kpi-value text-mono ${metrics.needsRotationCount > 0 ? 'text-warning' : 'text-primary'}`}>
-              {metrics.needsRotationCount}
+            <span className={`kpi-value text-mono ${sev.high > 0 ? 'text-warning' : 'text-primary'}`}>
+              {sev.high}
             </span>
-            <span className="kpi-meta text-muted">Historical / leaked</span>
+            <span className="kpi-meta text-muted">Priority remediation</span>
           </div>
 
           <div className="kpi-card">
@@ -98,9 +130,9 @@ export const Dashboard = () => {
               <CheckCircleIcon size={16} className="text-success" />
             </div>
             <span className="kpi-value text-mono text-success">
-              {metrics.avgCompliance}%
+              {avgCompliance != null ? `${avgCompliance}%` : '—'}
             </span>
-            <span className="kpi-meta text-muted">OWASP & ASVS index</span>
+            <span className="kpi-meta text-muted">OWASP &amp; ASVS index</span>
           </div>
         </div>
 
@@ -111,7 +143,7 @@ export const Dashboard = () => {
             <div className="card-header">
               <div>
                 <h3 className="card-title">Repository Security Posture</h3>
-                <p className="card-subtitle">Calculated compliance index and transparent heuristic risk per repository.</p>
+                <p className="card-subtitle">Compliance score and Heuristic Risk Score per repository.</p>
               </div>
               <Link to="/repositories" className="card-header-link">
                 View All &rarr;
@@ -123,198 +155,143 @@ export const Dashboard = () => {
                 <thead>
                   <tr>
                     <th>Repository</th>
-                    <th className="text-right">Open Findings</th>
-                    <th className="text-right">Critical</th>
-                    <th className="text-right">Compliance</th>
-                    <th className="text-right">Heuristic Risk</th>
-                    <th className="text-right">Last Scan</th>
+                    <th>Compliance Index</th>
+                    <th>Heuristic Risk Score</th>
                     <th className="text-right">Action</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {repositories.length === 0 ? (
+                  {repoScores.length === 0 ? (
                     <tr>
-                      <td colSpan="7" className="text-center text-muted py-4">
-                        No repositories connected yet. Add a repository to begin monitoring.
+                      <td colSpan={4} className="text-center py-4 text-muted">
+                        No repository score data recorded yet. Run a scan to compute security metrics.
                       </td>
                     </tr>
                   ) : (
-                    repositories.map((repo) => {
-                      const repoFindings = findings.filter(f => f.repoId === repo.id);
-                      const openCount = repoFindings.filter(f => !['fixed', 'false_positive'].includes(f.status)).length;
-                      const critCount = repoFindings.filter(f => f.severity === 'critical' && !['fixed', 'false_positive'].includes(f.status)).length;
-                      const complianceScore = calculateComplianceScore(repoFindings);
-                      const riskData = calculateHeuristicRisk(repo, repoFindings);
-
-                      return (
-                        <tr key={repo.id}>
-                          <td>
-                            <Link to={`/repositories/${repo.id}`} className="font-semibold text-mono text-link">
-                              {repo.name}
-                            </Link>
-                            <div className="text-xs text-muted">{repo.fullName}</div>
-                          </td>
-                          <td className="text-right text-mono font-medium">
-                            {openCount > 0 ? (
-                              <span className="badge-counter text-danger">{openCount}</span>
-                            ) : (
-                              <span className="badge-counter text-success">0</span>
-                            )}
-                          </td>
-                          <td className="text-right text-mono font-semibold text-danger">
-                            {critCount > 0 ? critCount : '-'}
-                          </td>
-                          <td className="text-right font-medium">
-                            <span className={complianceScore >= 80 ? 'text-success' : complianceScore >= 50 ? 'text-warning' : 'text-danger'}>
-                              {complianceScore}%
+                    repoScores.map((repo) => (
+                      <tr key={repo.repo_id}>
+                        <td>
+                          <Link to={`/repositories/${repo.repo_id}`} className="repo-table-link">
+                            <RepoIcon size={14} className="text-secondary mr-2" />
+                            <span className="font-bold text-primary">{repo.full_name}</span>
+                          </Link>
+                        </td>
+                        <td>
+                          <div className="score-meter-wrap">
+                            <span className="score-number font-bold text-success">
+                              {repo.compliance_score ?? 100}%
                             </span>
-                          </td>
-                          <td className="text-right text-mono font-semibold">
-                            <span className={riskData.score >= 60 ? 'text-danger' : riskData.score >= 30 ? 'text-warning' : 'text-success'}>
-                              {riskData.score} / 100
+                            <div className="meter-track">
+                              <div
+                                className="meter-fill fill-compliance"
+                                style={{ width: `${repo.compliance_score ?? 100}%` }}
+                              />
+                            </div>
+                          </div>
+                        </td>
+                        <td>
+                          <div className="score-meter-wrap">
+                            <span className={`score-number font-bold ${(repo.risk_score || 0) > 40 ? 'text-danger' : (repo.risk_score || 0) > 20 ? 'text-warning' : 'text-success'}`}>
+                              {repo.risk_score ?? 0}/100
                             </span>
-                          </td>
-                          <td className="text-right text-xs text-secondary">
-                            {repo.lastScannedAt ? new Date(repo.lastScannedAt).toLocaleDateString() : 'Never'}
-                          </td>
-                          <td className="text-right">
-                            <Link to={`/repositories/${repo.id}`} className="btn-sm btn-secondary">
-                              Inspect
-                            </Link>
-                          </td>
-                        </tr>
-                      );
-                    })
+                            <div className="meter-track">
+                              <div
+                                className="meter-fill"
+                                style={{
+                                  width: `${Math.min(repo.risk_score ?? 0, 100)}%`,
+                                  backgroundColor: (repo.risk_score || 0) > 40 ? 'var(--color-danger)' : (repo.risk_score || 0) > 20 ? 'var(--color-warning)' : 'var(--color-success)'
+                                }}
+                              />
+                            </div>
+                          </div>
+                        </td>
+                        <td className="text-right">
+                          <Link to={`/repositories/${repo.repo_id}`} className="btn-secondary btn-sm">
+                            Inspect
+                          </Link>
+                        </td>
+                      </tr>
+                    ))
                   )}
                 </tbody>
               </table>
             </div>
           </div>
 
-          {/* Right Column: Severity Breakdown & Attention Required */}
-          <div className="dashboard-side-col">
-            {/* Severity Distribution */}
-            <div className="card">
-              <div className="card-header">
-                <h3 className="card-title">Active Severity Breakdown</h3>
-              </div>
-              <div className="severity-distribution-list">
-                <div className="severity-row">
-                  <div className="severity-label-wrap">
-                    <SeverityBadge severity="critical" />
-                    <span className="severity-row-desc">Immediate exploitation threat</span>
-                  </div>
-                  <span className="severity-row-count text-danger font-bold text-mono">
-                    {sevCounts.critical}
-                  </span>
-                </div>
-
-                <div className="severity-row">
-                  <div className="severity-label-wrap">
-                    <SeverityBadge severity="high" />
-                    <span className="severity-row-desc">Elevated risk / known CVE</span>
-                  </div>
-                  <span className="severity-row-count text-warning font-bold text-mono">
-                    {sevCounts.high}
-                  </span>
-                </div>
-
-                <div className="severity-row">
-                  <div className="severity-label-wrap">
-                    <SeverityBadge severity="medium" />
-                    <span className="severity-row-desc">Configuration / limited impact</span>
-                  </div>
-                  <span className="severity-row-count text-info font-bold text-mono">
-                    {sevCounts.medium}
-                  </span>
-                </div>
-
-                <div className="severity-row">
-                  <div className="severity-label-wrap">
-                    <SeverityBadge severity="low" />
-                    <span className="severity-row-desc">Informational / hygiene</span>
-                  </div>
-                  <span className="severity-row-count text-muted font-bold text-mono">
-                    {sevCounts.low}
-                  </span>
-                </div>
-              </div>
+          {/* Severity Distribution & Trend Panel */}
+          <div className="card dashboard-side-card">
+            <div className="card-header">
+              <h3 className="card-title">Severity Breakdown</h3>
             </div>
-
-            {/* Recent Activity Log */}
-            <div className="card">
-              <div className="card-header">
-                <h3 className="card-title">Recent Security Activity</h3>
+            <div className="card-body">
+              <div className="severity-dist-list">
+                <div className="sev-dist-row">
+                  <span className="sev-dist-label">
+                    <span className="dot dot-critical" />
+                    <span>Critical</span>
+                  </span>
+                  <span className="sev-dist-count text-mono font-bold text-danger">{sev.critical}</span>
+                </div>
+                <div className="sev-dist-row">
+                  <span className="sev-dist-label">
+                    <span className="dot dot-high" />
+                    <span>High</span>
+                  </span>
+                  <span className="sev-dist-count text-mono font-bold text-warning">{sev.high}</span>
+                </div>
+                <div className="sev-dist-row">
+                  <span className="sev-dist-label">
+                    <span className="dot dot-medium" />
+                    <span>Medium</span>
+                  </span>
+                  <span className="sev-dist-count text-mono font-bold">{sev.medium}</span>
+                </div>
+                <div className="sev-dist-row">
+                  <span className="sev-dist-label">
+                    <span className="dot dot-low" />
+                    <span>Low</span>
+                  </span>
+                  <span className="sev-dist-count text-mono text-muted">{sev.low}</span>
+                </div>
               </div>
-              <div className="activity-timeline-list">
-                {activities.slice(0, 4).map((act) => (
-                  <div key={act.id} className="activity-item">
-                    <div className="activity-dot" />
-                    <div className="activity-content">
-                      <div className="activity-header">
-                        <span className="activity-title">{act.title}</span>
-                        <span className="activity-time text-mono">
-                          {new Date(act.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                        </span>
-                      </div>
-                      <p className="activity-desc">{act.description}</p>
-                    </div>
+
+              {/* 7-Day Trend Section */}
+              <div className="trend-section mt-4 pt-3" style={{ borderTop: '1px solid var(--border-color)' }}>
+                <h4 style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '12px' }}>
+                  7-Day Detection Trend
+                </h4>
+                {trend.length === 0 ? (
+                  <p className="text-muted text-sm italic">No trend points recorded within the last 7 days.</p>
+                ) : (
+                  <div className="trend-bars" style={{ display: 'flex', alignItems: 'flex-end', gap: '8px', height: '60px' }}>
+                    {trend.map((t, idx) => {
+                      const count = t.findings || 0;
+                      const maxCount = Math.max(...trend.map(item => item.findings || 0), 1);
+                      const heightPct = Math.max(Math.round((count / maxCount) * 100), 15);
+                      return (
+                        <div key={idx} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                          <span style={{ fontSize: '10px', color: 'var(--text-muted)', marginBottom: '2px' }}>{count}</span>
+                          <div
+                            style={{
+                              width: '100%',
+                              height: `${heightPct}%`,
+                              backgroundColor: 'var(--color-primary)',
+                              borderRadius: '2px'
+                            }}
+                            title={`${t.date}: ${count} findings`}
+                          />
+                          <span style={{ fontSize: '9px', color: 'var(--text-muted)', marginTop: '4px' }}>
+                            {t.date ? t.date.slice(5) : ''}
+                          </span>
+                        </div>
+                      );
+                    })}
                   </div>
-                ))}
+                )}
               </div>
             </div>
           </div>
         </div>
-
-        {/* Immediate Attention Required Section */}
-        {urgentFindings.length > 0 && (
-          <div className="card mt-4">
-            <div className="card-header">
-              <div>
-                <h3 className="card-title text-danger">⚠️ High Priority Findings Requiring Attention</h3>
-                <p className="card-subtitle">Exposed credentials and critical dependencies that impact overall risk.</p>
-              </div>
-            </div>
-
-            <div className="table-responsive">
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>Severity</th>
-                    <th>Type</th>
-                    <th>Vulnerability / Secret ID</th>
-                    <th>Repository</th>
-                    <th>Location</th>
-                    <th>Status</th>
-                    <th className="text-right">Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {urgentFindings.map((f) => (
-                    <tr key={f.id}>
-                      <td><SeverityBadge severity={f.severity} /></td>
-                      <td className="text-capitalize font-medium">{f.type}</td>
-                      <td>
-                        <Link to={`/findings/${f.id}`} className="font-semibold text-mono text-link">
-                          {f.ruleId}
-                        </Link>
-                        <div className="text-xs text-secondary">{f.title}</div>
-                      </td>
-                      <td className="text-mono text-sm">{f.repoId}</td>
-                      <td className="text-mono text-sm">{f.filePath}{f.line ? `:${f.line}` : ''}</td>
-                      <td><StatusChip status={f.status} /></td>
-                      <td className="text-right">
-                        <Link to={`/findings/${f.id}/fix`} className="btn-sm btn-primary">
-                          Review Fix &rarr;
-                        </Link>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );

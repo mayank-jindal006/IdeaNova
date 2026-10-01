@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { useRepoGuard } from '../context/RepoGuardContext';
+import api from '../api/client';
 import Header from '../components/Header';
 import EmptyState from '../components/EmptyState';
 import {
@@ -13,27 +13,23 @@ import {
 export const ScanProgress = () => {
   const { repoId } = useParams();
   const navigate = useNavigate();
-  const { repositories, findings, runScan } = useRepoGuard();
 
-  const repo = repositories.find(r => r.id === repoId);
-
+  const [repo, setRepo] = useState(null);
   const [scanState, setScanState] = useState({
-    stage: 'idle', // 'idle' | 'queued' | 'scanning_secrets' | 'scanning_deps' | 'analysing' | 'completed' | 'failed'
-    label: 'Ready to scan',
-    progress: 0
+    stage: 'queued', // 'queued' | 'scanning_secrets' | 'scanning_deps' | 'analysing' | 'done' | 'failed'
+    label: 'Connecting to scan pipeline...',
+    progress: 10
   });
   const [logs, setLogs] = useState([]);
   const [isScanning, setIsScanning] = useState(false);
-  const [scanResult, setScanResult] = useState(null);
-  const [errorMsg, setErrorMsg] = useState(null);
   const terminalRef = useRef(null);
 
   const stagesList = [
     { key: 'queued', name: '1. Ingestion', desc: 'Git tree clone & HEAD checkout' },
-    { key: 'scanning_secrets', name: '2. Secret Scan', desc: 'Gitleaks entropy & regex pattern scan' },
+    { key: 'scanning_secrets', name: '2. Secret Scan', desc: 'Gitleaks entropy & regex pattern detection' },
     { key: 'scanning_deps', name: '3. Dependency Scan', desc: 'OSV.dev CVE database reconciliation' },
-    { key: 'analysing', name: '4. Analysis', desc: 'OWASP / ASVS mapping & Heuristic risk computation' },
-    { key: 'completed', name: '5. Completed', desc: 'Telemetry updated & scan artifact recorded' }
+    { key: 'analysing', name: '4. Analysis', desc: 'OWASP / ASVS control mapping & Heuristic Risk computation' },
+    { key: 'done', name: '5. Completed', desc: 'Telemetry updated & scan artifacts recorded' }
   ];
 
   const addLog = (text) => {
@@ -47,42 +43,138 @@ export const ScanProgress = () => {
     }
   }, [logs]);
 
-  // Execute scan
-  const executeScan = async () => {
-    if (isScanning || !repo) return;
-    setIsScanning(true);
-    setErrorMsg(null);
-    setLogs([]);
-    addLog(`Initiating RepoGuard pipeline for repository: ${repo.fullName} (branch: ${repo.defaultBranch})`);
-
-    try {
-      const result = await runScan(repo.id, (update) => {
-        setScanState(update);
-        addLog(update.label);
-      });
-      setScanResult(result);
-      addLog(`Scan pipeline finished. Discovered ${result.findingsCount} active finding(s). Duration: ${result.durationSeconds}s.`);
-    } catch (err) {
-      setScanState({
-        stage: 'failed',
-        label: 'Scan failed: ' + (err.message || 'Unknown error'),
-        progress: 0
-      });
-      setErrorMsg(err.message || 'Scan execution encountered an error.');
-      addLog(`FATAL: ${err.message || 'Scan aborted.'}`);
-    } finally {
-      setIsScanning(false);
+  // Load repo info
+  useEffect(() => {
+    let isMounted = true;
+    async function loadRepo() {
+      try {
+        const data = await api.getRepository(repoId);
+        if (isMounted) setRepo(data);
+      } catch (err) {
+        if (isMounted) {
+          setErrorMsg(err.message || 'Failed to load repository details from API.');
+          setScanState({
+            stage: 'failed',
+            label: err.message || 'Repository not found',
+            progress: 0
+          });
+        }
+      }
     }
-  };
+    loadRepo();
+    return () => {
+      isMounted = false;
+    };
+  }, [repoId]);
 
+  // Execute scan and poll GET /api/scans/{id} every 2 seconds
   const hasTriggeredRef = useRef(false);
 
-  // Auto-start scan on first entry if repo scan is queued
   useEffect(() => {
-    if (repo && !hasTriggeredRef.current) {
-      hasTriggeredRef.current = true;
-      executeScan();
+    if (!repo || hasTriggeredRef.current) return;
+    hasTriggeredRef.current = true;
+
+    let pollInterval = null;
+    let cancelled = false;
+
+    async function startScanFlow() {
+      setIsScanning(true);
+      setErrorMsg(null);
+      addLog(`Initiating RepoGuard pipeline for repository: ${repo.full_name} (${repo.default_branch || 'main'})`);
+
+      let scanId = null;
+      try {
+        const createRes = await api.createScan(repo.id);
+        scanId = createRes?.scan_id;
+        addLog(`Scan queued on worker: scan_id #${scanId}.`);
+      } catch (err) {
+        setScanState({
+          stage: 'failed',
+          label: err.message || 'Failed to trigger scan on API worker.',
+          progress: 0
+        });
+        addLog(`FATAL: ${err.message || 'Failed to trigger scan on API worker.'}`);
+        setIsScanning(false);
+        return;
+      }
+
+      setScanState({
+        stage: 'scanning_secrets',
+        label: 'Executing Gitleaks secret scanner over tree and history...',
+        progress: 30
+      });
+      addLog('> Executing Gitleaks pattern detection engine...');
+
+      let elapsedSteps = 0;
+
+      // Polling function: Poll GET /api/scans/{id} every 2 seconds
+      pollInterval = setInterval(async () => {
+        if (cancelled) return;
+        elapsedSteps++;
+
+        try {
+          const scanData = await api.getScan(scanId);
+
+          if (scanData.status === 'done') {
+            clearInterval(pollInterval);
+            setScanState({
+              stage: 'done',
+              label: 'Scan finished successfully.',
+              progress: 100
+            });
+            addLog(`Scan completed: Status DONE.`);
+            addLog(`Finalizing security control mappings and Heuristic Risk computation...`);
+            setIsScanning(false);
+            return;
+          } else if (scanData.status === 'failed') {
+            clearInterval(pollInterval);
+            setScanState({
+              stage: 'failed',
+              label: scanData.error || 'Scan failed.',
+              progress: 0
+            });
+            addLog(`FATAL: ${scanData.error || 'Scan process reported failure.'}`);
+            setIsScanning(false);
+            return;
+          } else if (scanData.status === 'running') {
+            if (elapsedSteps === 1) {
+              setScanState({
+                stage: 'scanning_deps',
+                label: 'Querying OSV.dev for dependency vulnerability advisories...',
+                progress: 55
+              });
+              addLog('> Querying OSV.dev API (batch query for requirements.txt / package.json)...');
+            } else if (elapsedSteps >= 2) {
+              setScanState({
+                stage: 'analysing',
+                label: 'Computing Heuristic Risk Scores and mapping OWASP/ASVS controls...',
+                progress: 80
+              });
+              addLog('> Reconciling OWASP Top 10 categories & ASVS V3/V6 control mappings...');
+            }
+          }
+        } catch (pollErr) {
+          addLog(`[WARN] Polling scan #${scanId} failed: ${pollErr.message}`);
+          if (elapsedSteps >= 15) {
+            clearInterval(pollInterval);
+            setScanState({
+              stage: 'failed',
+              label: `Scan polling timed out or failed: ${pollErr.message}`,
+              progress: 0
+            });
+            addLog(`FATAL: Polling timed out. Backend scan status unavailable.`);
+            setIsScanning(false);
+          }
+        }
+      }, 2000);
     }
+
+    startScanFlow();
+
+    return () => {
+      cancelled = true;
+      if (pollInterval) clearInterval(pollInterval);
+    };
   }, [repo]);
 
   if (!repo) {
@@ -99,11 +191,11 @@ export const ScanProgress = () => {
   }
 
   const getStageStatus = (stageKey) => {
-    const order = ['queued', 'scanning_secrets', 'scanning_deps', 'analysing', 'completed'];
+    const order = ['queued', 'scanning_secrets', 'scanning_deps', 'analysing', 'done'];
     const currentIndex = order.indexOf(scanState.stage);
     const targetIndex = order.indexOf(stageKey);
 
-    if (scanState.stage === 'completed') return 'done';
+    if (scanState.stage === 'done') return 'done';
     if (scanState.stage === 'failed') {
       if (targetIndex < currentIndex) return 'done';
       if (targetIndex === currentIndex) return 'failed';
@@ -114,180 +206,126 @@ export const ScanProgress = () => {
     return 'pending';
   };
 
-  const repoFindings = findings.filter(f => f.repoId === repo.id);
-  const secretCount = repoFindings.filter(f => f.type === 'secret').length;
-  const depCount = repoFindings.filter(f => f.type === 'dependency').length;
-
   return (
     <div className="scan-progress-page">
       <Header
-        title={`Scan Pipeline: ${repo.name}`}
-        subtitle={`Branch ${repo.defaultBranch} • Real-time Gitleaks and OSV.dev static analysis execution.`}
+        title={`Security Scan: ${repo.full_name}`}
+        subtitle={`Branch: ${repo.default_branch || 'main'} • Automated Gitleaks & OSV.dev Verification`}
         breadcrumbs={[
           { label: 'Repositories', path: '/repositories' },
-          { label: repo.name, path: `/repositories/${repo.id}` },
+          { label: repo.full_name, path: `/repositories/${repo.id}` },
           { label: 'Scan Pipeline' }
         ]}
-        actions={
-          <div className="header-action-group">
-            <Link to={`/repositories/${repo.id}`} className="btn-secondary">
-              Back to Repository
-            </Link>
-            <button
-              className="btn-primary"
-              onClick={executeScan}
-              disabled={isScanning}
-            >
-              <RefreshCwIcon size={14} className={isScanning ? 'spin-icon' : ''} />
-              <span>{isScanning ? 'Scanning in Progress...' : 'Run Scan Again'}</span>
-            </button>
-          </div>
-        }
       />
 
       <div className="page-content-padded">
-        {/* Progress Bar & Summary */}
-        <div className="panel-box scan-summary-card">
-          <div className="scan-header-top">
+        {/* Progress Bar & Status Header */}
+        <div className="card scan-status-card mb-4">
+          <div className="scan-status-header">
             <div className="scan-status-info">
-              <span className={`status-pill ${scanState.stage === 'completed' ? 'pill-success' : scanState.stage === 'failed' ? 'pill-danger' : 'pill-active'}`}>
-                {scanState.stage === 'completed' ? 'SCAN COMPLETE' : scanState.stage === 'failed' ? 'SCAN FAILED' : 'ANALYSIS IN PROGRESS'}
-              </span>
-              <h2 className="scan-stage-headline">{scanState.label}</h2>
+              <span className="scan-status-label text-mono">PIPELINE STATUS</span>
+              <h2 className="scan-current-stage">
+                {scanState.stage === 'done' ? (
+                  <span className="text-success" style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
+                    <CheckCircleIcon size={24} /> Scan Completed Successfully
+                  </span>
+                ) : scanState.stage === 'failed' ? (
+                  <span className="text-danger" style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
+                    <AlertTriangleIcon size={24} /> Pipeline Failed
+                  </span>
+                ) : (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
+                    <RefreshCwIcon size={20} className="spin-icon text-primary" />
+                    {scanState.label}
+                  </span>
+                )}
+              </h2>
             </div>
             <div className="scan-percentage text-mono">
               {scanState.progress}%
             </div>
           </div>
 
-          <div className="progress-bar-track">
+          <div className="scan-progress-track">
             <div
-              className={`progress-bar-fill ${scanState.stage === 'completed' ? 'fill-success' : scanState.stage === 'failed' ? 'fill-danger' : 'fill-primary'}`}
+              className={`scan-progress-bar ${scanState.stage === 'failed' ? 'bar-failed' : ''}`}
               style={{ width: `${scanState.progress}%` }}
-              role="progressbar"
-              aria-valuenow={scanState.progress}
-              aria-valuemin="0"
-              aria-valuemax="100"
             />
           </div>
-
-          {/* Sequential Stages Grid */}
-          <div className="scan-stages-grid">
-            {stagesList.map((stg) => {
-              const status = getStageStatus(stg.key);
-              return (
-                <div key={stg.key} className={`scan-stage-col stage-${status}`}>
-                  <div className="stage-top">
-                    <span className="stage-indicator">
-                      {status === 'done' && <CheckCircleIcon size={14} className="text-success" />}
-                      {status === 'active' && <span className="status-dot-pulse" />}
-                      {status === 'failed' && <AlertTriangleIcon size={14} className="text-danger" />}
-                      {status === 'pending' && <span className="stage-dot-pending" />}
-                    </span>
-                    <span className="stage-name">{stg.name}</span>
-                  </div>
-                  <p className="stage-desc">{stg.desc}</p>
-                </div>
-              );
-            })}
-          </div>
         </div>
 
-        {/* Live Scan Log Terminal */}
-        <div className="panel-box terminal-box">
-          <div className="terminal-header">
-            <div className="terminal-dots">
-              <span className="terminal-dot" />
-              <span className="terminal-dot" />
-              <span className="terminal-dot" />
+        {/* 2-Column: Stages List & Terminal Output */}
+        <div className="scan-grid-layout">
+          {/* Pipeline Stages */}
+          <div className="card scan-stages-card">
+            <div className="card-header">
+              <h3 className="card-title">Execution Pipeline</h3>
             </div>
-            <div className="terminal-title text-mono">
-              repoguard-scanner-agent // {repo.fullName}
-            </div>
-            <div className="terminal-badge text-mono">
-              {isScanning ? 'RUNNING' : scanState.stage === 'completed' ? 'EXIT CODE 0' : 'IDLE'}
+            <div className="stages-list">
+              {stagesList.map((stage) => {
+                const status = getStageStatus(stage.key);
+                return (
+                  <div key={stage.key} className={`stage-item stage-${status}`}>
+                    <div className="stage-icon-wrap">
+                      {status === 'done' ? (
+                        <CheckCircleIcon size={16} className="text-success" />
+                      ) : status === 'active' ? (
+                        <RefreshCwIcon size={14} className="spin-icon text-primary" />
+                      ) : status === 'failed' ? (
+                        <AlertTriangleIcon size={16} className="text-danger" />
+                      ) : (
+                        <span className="stage-dot" />
+                      )}
+                    </div>
+                    <div className="stage-info">
+                      <span className="stage-name font-bold">{stage.name}</span>
+                      <span className="stage-desc text-secondary text-sm">{stage.desc}</span>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
 
-          <div className="terminal-body text-mono" ref={terminalRef}>
-            {logs.length === 0 ? (
-              <div className="terminal-empty">Ready. Awaiting scan pipeline initialization...</div>
-            ) : (
-              logs.map((log, i) => (
-                <div key={i} className="terminal-line">
+          {/* Console / Log Terminal */}
+          <div className="card scan-terminal-card">
+            <div className="terminal-header">
+              <div className="terminal-dots">
+                <span className="t-dot dot-red" />
+                <span className="t-dot dot-yellow" />
+                <span className="t-dot dot-green" />
+              </div>
+              <span className="terminal-title text-mono">repoguard-engine.log</span>
+            </div>
+            <div className="terminal-body text-mono" ref={terminalRef}>
+              {logs.map((log, idx) => (
+                <div key={idx} className="terminal-line">
                   {log}
                 </div>
-              ))
-            )}
-            {isScanning && (
-              <div className="terminal-line terminal-cursor-line">
-                <span className="terminal-prompt">&gt;</span> Executing static analysis AST walkers...
-                <span className="terminal-blinking-cursor">_</span>
-              </div>
-            )}
+              ))}
+              {isScanning && (
+                <div className="terminal-line terminal-cursor">
+                  <span className="terminal-prompt">&gt;</span> scanning in progress...
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
-        {/* Completion Result Card */}
-        {scanState.stage === 'completed' && (
-          <div className="panel-box scan-results-box">
-            <div className="results-top">
-              <div className="results-icon-wrap">
-                <CheckCircleIcon size={24} className="text-success" />
-              </div>
-              <div className="results-text">
-                <h3 className="results-title">Pipeline Analysis Complete</h3>
-                <p className="results-desc">
-                  Repository scan successfully analyzed the current branch. All findings have been indexed into the central security dashboard.
+        {/* Scan Completion CTA */}
+        {scanState.stage === 'done' && (
+          <div className="card completion-card mt-4" style={{ borderLeft: '4px solid var(--color-success)' }}>
+            <div className="completion-content" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <h3 className="text-success font-bold" style={{ margin: '0 0 6px' }}>Scan Pipeline Complete</h3>
+                <p className="text-secondary" style={{ margin: 0 }}>
+                  Security findings, OWASP/ASVS mappings, and Heuristic Risk Scores have been saved.
                 </p>
               </div>
-            </div>
-
-            <div className="results-metrics-grid">
-              <div className="result-metric-card">
-                <span className="metric-num text-danger">{secretCount}</span>
-                <span className="metric-lbl">Secret Findings</span>
-              </div>
-              <div className="result-metric-card">
-                <span className="metric-num text-warning">{depCount}</span>
-                <span className="metric-lbl">Dependency Vulnerabilities</span>
-              </div>
-              <div className="result-metric-card">
-                <span className="metric-num">{scanResult?.durationSeconds || 3}s</span>
-                <span className="metric-lbl">Execution Duration</span>
-              </div>
-              <div className="result-metric-card">
-                <span className="metric-num text-mono text-secondary">
-                  {scanResult?.commitSha?.slice(0, 10) || 'head-latest'}
-                </span>
-                <span className="metric-lbl">Commit Hash</span>
-              </div>
-            </div>
-
-            <div className="results-actions">
               <Link to={`/repositories/${repo.id}`} className="btn-primary">
-                <span>View Findings in Repository</span>
-                <ArrowRightIcon size={14} />
+                <span>View Repository Findings</span>
+                <ArrowRightIcon size={14} style={{ marginLeft: '6px' }} />
               </Link>
-              <button className="btn-secondary" onClick={executeScan} disabled={isScanning}>
-                Run Another Scan
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Failure Box */}
-        {scanState.stage === 'failed' && (
-          <div className="panel-box error-alert-box">
-            <div className="alert-top">
-              <AlertTriangleIcon size={20} className="text-danger" />
-              <h3 className="alert-title">Scan Failed</h3>
-            </div>
-            <p className="alert-message">{errorMsg || 'An unexpected error interrupted the scan pipeline.'}</p>
-            <div className="alert-actions">
-              <button className="btn-primary" onClick={executeScan}>
-                Retry Scan
-              </button>
             </div>
           </div>
         )}

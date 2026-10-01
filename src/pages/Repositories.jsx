@@ -1,6 +1,6 @@
-import React, { useState, useMemo } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { useRepoGuard } from '../context/RepoGuardContext';
+import React, { useState, useEffect, useMemo } from 'react';
+import { Link } from 'react-router-dom';
+import api from '../api/client';
 import Header from '../components/Header';
 import AddRepoModal from '../components/AddRepoModal';
 import EmptyState from '../components/EmptyState';
@@ -9,56 +9,74 @@ import {
   PlusIcon,
   XIcon,
   RefreshCwIcon,
-  RepoIcon
+  RepoIcon,
+  AlertTriangleIcon
 } from '../components/icons';
-import {
-  calculateComplianceScore,
-  calculateHeuristicRisk
-} from '../services/repoGuardService';
 
 export const Repositories = () => {
-  const navigate = useNavigate();
-  const { repositories, findings } = useRepoGuard();
-
+  const [repositories, setRepositories] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
-  const [sortBy, setSortBy] = useState('risk_desc'); // 'risk_desc' | 'risk_asc' | 'compliance_desc' | 'name_asc'
+  const [sortBy, setSortBy] = useState('risk_desc'); // 'risk_desc' | 'compliance_desc' | 'name_asc'
   const [isModalOpen, setIsModalOpen] = useState(false);
 
-  // Filter and sort repositories
+  const [errorText, setErrorText] = useState(null);
+
+  const fetchRepositories = async () => {
+    setLoading(true);
+    setErrorText(null);
+    try {
+      const data = await api.listRepositories();
+      setRepositories(data || []);
+    } catch (err) {
+      setErrorText(err.message || 'Failed to load repositories from API.');
+      setRepositories([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchRepositories();
+  }, []);
+
+  const handleAddRepo = async (fullName) => {
+    try {
+      await api.createRepository(fullName);
+      await fetchRepositories();
+      setIsModalOpen(false);
+    } catch (err) {
+      alert(err.message || 'Failed to add repository');
+    }
+  };
+
+  // Filter and sort
   const filteredRepos = useMemo(() => {
     let list = [...repositories];
 
-    // Search filter
-    const query = searchQuery.trim().toLowerCase();
-    if (query) {
-      list = list.filter(r =>
-        r.name.toLowerCase().includes(query) ||
-        r.fullName.toLowerCase().includes(query) ||
-        (r.description && r.description.toLowerCase().includes(query))
-      );
+    const q = searchQuery.trim().toLowerCase();
+    if (q) {
+      list = list.filter(r => (r.full_name || '').toLowerCase().includes(q));
     }
 
-    // Sort
     list.sort((a, b) => {
-      const aFindings = findings.filter(f => f.repoId === a.id);
-      const bFindings = findings.filter(f => f.repoId === b.id);
-      const aRisk = calculateHeuristicRisk(a, aFindings).score;
-      const bRisk = calculateHeuristicRisk(b, bFindings).score;
-      const aCompliance = calculateComplianceScore(aFindings);
-      const bCompliance = calculateComplianceScore(bFindings);
+      const aRisk = a.latest_score?.risk_score ?? 0;
+      const bRisk = b.latest_score?.risk_score ?? 0;
+      const aComp = a.latest_score?.compliance_score ?? 100;
+      const bComp = b.latest_score?.compliance_score ?? 100;
 
       switch (sortBy) {
         case 'risk_desc': return bRisk - aRisk;
         case 'risk_asc': return aRisk - bRisk;
-        case 'compliance_desc': return bCompliance - aCompliance;
-        case 'compliance_asc': return aCompliance - bCompliance;
-        case 'name_asc': return a.name.localeCompare(b.name);
+        case 'compliance_desc': return bComp - aComp;
+        case 'compliance_asc': return aComp - bComp;
+        case 'name_asc': return (a.full_name || '').localeCompare(b.full_name || '');
         default: return 0;
       }
     });
 
     return list;
-  }, [repositories, findings, searchQuery, sortBy]);
+  }, [repositories, searchQuery, sortBy]);
 
   return (
     <div className="repositories-page">
@@ -75,6 +93,17 @@ export const Repositories = () => {
       />
 
       <div className="page-content-padded">
+        {/* Error notification if any */}
+        {errorText && (
+          <div className="panel-box error-alert-box mb-4">
+            <div className="alert-top">
+              <AlertTriangleIcon size={18} className="text-danger" />
+              <h3 className="alert-title">Backend API Notice</h3>
+            </div>
+            <p className="alert-message">{errorText}</p>
+          </div>
+        )}
+
         {/* Controls Toolbar: Search & Sort */}
         <div className="table-toolbar">
           <div className="search-box">
@@ -99,125 +128,164 @@ export const Repositories = () => {
           </div>
 
           <div className="toolbar-actions">
-            <label htmlFor="repo-sort-select" className="filter-label">Sort by:</label>
-            <select
-              id="repo-sort-select"
-              className="filter-select"
-              value={sortBy}
-              onChange={(e) => setSortBy(e.target.value)}
+            <div className="sort-group">
+              <label htmlFor="repo-sort" className="sort-label">Sort by:</label>
+              <select
+                id="repo-sort"
+                className="sort-select"
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value)}
+              >
+                <option value="risk_desc">Heuristic Risk: High to Low</option>
+                <option value="risk_asc">Heuristic Risk: Low to High</option>
+                <option value="compliance_desc">Compliance: High to Low</option>
+                <option value="name_asc">Repository Name: A to Z</option>
+              </select>
+            </div>
+            <button
+              type="button"
+              className="btn-secondary btn-icon-only"
+              onClick={fetchRepositories}
+              title="Refresh repositories"
             >
-              <option value="risk_desc">Highest Risk First</option>
-              <option value="risk_asc">Lowest Risk First</option>
-              <option value="compliance_desc">Highest Compliance</option>
-              <option value="compliance_asc">Lowest Compliance</option>
-              <option value="name_asc">Name (A-Z)</option>
-            </select>
+              <RefreshCwIcon size={14} className={loading ? 'spin-icon' : ''} />
+            </button>
           </div>
         </div>
 
         {/* Repositories Table */}
         <div className="card">
-          {filteredRepos.length === 0 ? (
-            searchQuery ? (
-              <EmptyState
-                title="No matching repositories"
-                message={`No repositories matched the query "${searchQuery}".`}
-                actionText="Clear Search Filter"
-                onAction={() => setSearchQuery('')}
-              />
-            ) : (
-              <EmptyState
-                icon={RepoIcon}
-                title="No monitored repositories"
-                message="You have not added any repositories to monitor yet."
-                actionText="Add First Repository"
-                onAction={() => setIsModalOpen(true)}
-              />
-            )
-          ) : (
-            <div className="table-responsive">
-              <table className="data-table">
-                <thead>
+          <div className="table-responsive">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Repository Name</th>
+                  <th>Default Branch</th>
+                  <th>Compliance Index</th>
+                  <th>Heuristic Risk Score</th>
+                  <th className="text-right">Last Scan</th>
+                  <th className="text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredRepos.length === 0 ? (
                   <tr>
-                    <th>Repository</th>
-                    <th>Branch</th>
-                    <th className="text-right">Open Findings</th>
-                    <th className="text-right">Critical</th>
-                    <th className="text-right">Compliance Score</th>
-                    <th className="text-right">Heuristic Risk Score</th>
-                    <th className="text-right">Last Scan</th>
-                    <th className="text-right">Actions</th>
+                    <td colSpan={6}>
+                      <EmptyState
+                        title="No Repositories Found"
+                        message={searchQuery ? `No matches found for "${searchQuery}".` : "No repositories monitored yet."}
+                        actionText="Add Repository"
+                        onAction={() => setIsModalOpen(true)}
+                      />
+                    </td>
                   </tr>
-                </thead>
-                <tbody>
-                  {filteredRepos.map((repo) => {
-                    const repoFindings = findings.filter(f => f.repoId === repo.id);
-                    const openCount = repoFindings.filter(f => !['fixed', 'false_positive'].includes(f.status)).length;
-                    const critCount = repoFindings.filter(f => f.severity === 'critical' && !['fixed', 'false_positive'].includes(f.status)).length;
-                    const compliance = calculateComplianceScore(repoFindings);
-                    const risk = calculateHeuristicRisk(repo, repoFindings).score;
+                ) : (
+                  filteredRepos.map((repo) => {
+                    const compScore = repo.latest_score?.compliance_score ?? null;
+                    const riskScore = repo.latest_score?.risk_score ?? null;
 
                     return (
                       <tr key={repo.id}>
                         <td>
-                          <Link to={`/repositories/${repo.id}`} className="font-semibold text-mono text-link">
-                            {repo.name}
-                          </Link>
-                          <div className="text-xs text-muted">{repo.fullName}</div>
+                          <div className="repo-name-cell">
+                            <RepoIcon size={16} className="text-secondary" />
+                            <div>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <Link to={`/repositories/${repo.id}`} className="repo-title-link">
+                                  {repo.full_name}
+                                </Link>
+                                <span
+                                  className={`badge ${repo.auto_fix_enabled ? 'badge-success' : 'badge-neutral'} text-xs font-mono`}
+                                  style={{ fontSize: '10px', padding: '1px 6px' }}
+                                  title={repo.auto_fix_enabled ? 'Auto-fix on push is enabled' : 'Manual remediation only'}
+                                >
+                                  {repo.auto_fix_enabled ? 'Auto-Fix: ON' : 'Auto-Fix: OFF'}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
                         </td>
-                        <td className="text-mono text-xs">{repo.defaultBranch}</td>
-                        <td className="text-right font-medium text-mono">
-                          {openCount > 0 ? (
-                            <span className="badge-counter text-danger">{openCount}</span>
-                          ) : (
-                            <span className="badge-counter text-success">0</span>
-                          )}
-                        </td>
-                        <td className="text-right font-bold text-mono">
-                          {critCount > 0 ? (
-                            <span className="text-danger">{critCount}</span>
-                          ) : (
-                            <span className="text-muted">-</span>
-                          )}
-                        </td>
-                        <td className="text-right font-medium">
-                          <span className={compliance >= 80 ? 'text-success' : compliance >= 50 ? 'text-warning' : 'text-danger'}>
-                            {compliance}%
+                        <td>
+                          <span className="badge badge-neutral text-mono">
+                            {repo.default_branch || 'main'}
                           </span>
                         </td>
-                        <td className="text-right font-bold text-mono">
-                          <span className={risk >= 60 ? 'text-danger' : risk >= 30 ? 'text-warning' : 'text-success'}>
-                            {risk} / 100
-                          </span>
+                        <td>
+                          {compScore != null ? (
+                            <div className="score-meter-wrap">
+                              <span className="score-number font-bold text-success">
+                                {compScore}%
+                              </span>
+                              <div className="meter-track">
+                                <div
+                                  className="meter-fill fill-compliance"
+                                  style={{ width: `${compScore}%` }}
+                                />
+                              </div>
+                            </div>
+                          ) : (
+                            <span className="text-secondary text-sm">Not scanned</span>
+                          )}
                         </td>
-                        <td className="text-right text-xs text-secondary">
-                          {repo.lastScannedAt ? new Date(repo.lastScannedAt).toLocaleDateString() : 'Never'}
+                        <td>
+                          {riskScore != null ? (
+                            <div className="score-meter-wrap">
+                              <span className={`score-number font-bold ${riskScore > 40 ? 'text-danger' : riskScore > 20 ? 'text-warning' : 'text-success'}`}>
+                                {riskScore}/100
+                              </span>
+                              <div className="meter-track">
+                                <div
+                                  className="meter-fill"
+                                  style={{
+                                    width: `${Math.min(riskScore, 100)}%`,
+                                    backgroundColor: riskScore > 40 ? 'var(--color-danger)' : riskScore > 20 ? 'var(--color-warning)' : 'var(--color-success)'
+                                  }}
+                                />
+                              </div>
+                            </div>
+                          ) : (
+                            <span className="text-secondary text-sm">Pending</span>
+                          )}
                         </td>
-                        <td className="text-right table-actions-cell">
-                          <Link to={`/repositories/${repo.id}/scan`} className="btn-sm btn-primary mr-2" title="Run Security Scan">
-                            <RefreshCwIcon size={12} />
-                            <span>Scan</span>
-                          </Link>
-                          <Link to={`/repositories/${repo.id}`} className="btn-sm btn-secondary">
-                            Details
-                          </Link>
+                        <td className="text-right text-secondary text-mono text-sm">
+                          {repo.last_scanned_at ? new Date(repo.last_scanned_at).toLocaleDateString() : 'Never'}
+                        </td>
+                        <td className="text-right">
+                          <div className="table-actions-group">
+                            <Link
+                              to={`/repositories/${repo.id}/scan`}
+                              className="btn-secondary btn-sm"
+                              title="Start security scan"
+                            >
+                              <RefreshCwIcon size={12} style={{ marginRight: '4px' }} />
+                              Scan
+                            </Link>
+                            <Link
+                              to={`/repositories/${repo.id}`}
+                              className="btn-primary btn-sm"
+                            >
+                              Inspect
+                            </Link>
+                          </div>
                         </td>
                       </tr>
                     );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
 
       {/* Add Repository Modal */}
-      <AddRepoModal
-        isOpen={isModalOpen}
-        onClose={() => setIsModalOpen(false)}
-        onRepoAdded={(created) => navigate(`/repositories/${created.id}`)}
-      />
+      {isModalOpen && (
+        <AddRepoModal
+          isOpen={isModalOpen}
+          onClose={() => setIsModalOpen(false)}
+          onAdd={handleAddRepo}
+        />
+      )}
     </div>
   );
 };

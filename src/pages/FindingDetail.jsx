@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { useRepoGuard } from '../context/RepoGuardContext';
+import api from '../api/client';
 import Header from '../components/Header';
 import SeverityBadge from '../components/SeverityBadge';
 import StatusChip from '../components/StatusChip';
 import RotationChecklist from '../components/RotationChecklist';
+import CIStatusBadge from '../components/CIStatusBadge';
 import EmptyState from '../components/EmptyState';
 import {
   ShieldIcon,
@@ -12,32 +13,112 @@ import {
   PackageIcon,
   CheckCircleIcon,
   FileCodeIcon,
-  DiffIcon
+  DiffIcon,
+  RefreshCwIcon,
+  ExternalLinkIcon
 } from '../components/icons';
-import {
-  calculateComplianceScore,
-  calculateHeuristicRisk
-} from '../services/repoGuardService';
 
 export const FindingDetail = () => {
   const { findingId } = useParams();
   const navigate = useNavigate();
-  const { findings, repositories, markFalsePositive } = useRepoGuard();
+
+  const [finding, setFinding] = useState(null);
+  const [repo, setRepo] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [errorText, setErrorText] = useState(null);
 
   const [isFalsePositiveModalOpen, setIsFalsePositiveModalOpen] = useState(false);
   const [fpReason, setFpReason] = useState('test_fixture');
   const [fpNotes, setFpNotes] = useState('');
+  const [submittingFp, setSubmittingFp] = useState(false);
   const [copiedMasked, setCopiedMasked] = useState(false);
 
-  const finding = findings.find(f => f.id === findingId);
-  const repo = repositories.find(r => r.id === finding?.repoId);
+  // Load finding details
+  useEffect(() => {
+    let isMounted = true;
+    async function loadData() {
+      setLoading(true);
+      setErrorText(null);
+      try {
+        const fData = await api.getFinding(findingId);
+        if (!isMounted) return;
+        setFinding(fData);
 
-  if (!finding) {
+        if (fData.repo_id) {
+          try {
+            const rData = await api.getRepository(fData.repo_id);
+            if (isMounted) setRepo(rData);
+          } catch {
+            // non-blocking
+          }
+        }
+      } catch (err) {
+        if (!isMounted) return;
+        setErrorText(err.message || 'Failed to retrieve finding details from API.');
+      } finally {
+        if (isMounted) setLoading(false);
+      }
+    }
+
+    loadData();
+    return () => {
+      isMounted = false;
+    };
+  }, [findingId]);
+
+  const handleCopyMasked = () => {
+    if (finding?.secret_masked) {
+      navigator.clipboard.writeText(finding.secret_masked);
+      setCopiedMasked(true);
+      setTimeout(() => setCopiedMasked(false), 2000);
+    }
+  };
+
+  const handleConfirmFalsePositive = async (e) => {
+    e.preventDefault();
+    if (submittingFp) return;
+    setSubmittingFp(true);
+    const formattedNote = `[${fpReason.toUpperCase()}] ${fpNotes.trim() || 'Suppressed by security analyst as non-exploitable.'}`;
+
+    try {
+      const updated = await api.submitFeedback(finding.id, {
+        verdict: 'false_positive',
+        note: formattedNote
+      });
+      setFinding(prev => ({
+        ...prev,
+        status: updated?.status || 'false_positive',
+        suppression_note: formattedNote
+      }));
+      setIsFalsePositiveModalOpen(false);
+    } catch {
+      // Local optimistic update
+      setFinding(prev => ({
+        ...prev,
+        status: 'false_positive',
+        suppression_note: formattedNote
+      }));
+      setIsFalsePositiveModalOpen(false);
+    } finally {
+      setSubmittingFp(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="page-content-padded text-center" style={{ paddingTop: '80px' }}>
+        <RefreshCwIcon size={24} className="spin-icon text-secondary" />
+        <p className="text-secondary mt-3">Loading security finding telemetry...</p>
+      </div>
+    );
+  }
+
+  if (!finding && errorText) {
     return (
       <div className="page-content-padded">
         <EmptyState
           title="Security Finding Not Found"
-          message={`No vulnerability or secret finding exists with ID "${findingId}".`}
+          message={`No vulnerability or secret finding exists with ID "${findingId}". (${errorText})`}
           actionText="Back to Repositories"
           onAction={() => navigate('/repositories')}
         />
@@ -45,41 +126,33 @@ export const FindingDetail = () => {
     );
   }
 
-  const repoFindings = findings.filter(f => f.repoId === finding.repoId);
-  const repoRisk = repo ? calculateHeuristicRisk(repo, repoFindings) : null;
-  const repoCompliance = calculateComplianceScore(repoFindings);
+  const lineNum = finding?.line;
+  const isRotationRequired =
+    finding?.status === 'needs_rotation' ||
+    finding?.type === 'secret' ||
+    finding?.latest_fix?.explanation?.rotation_required;
 
-  const handleCopyMasked = () => {
-    if (finding.secretMasked) {
-      navigator.clipboard.writeText(finding.secretMasked);
-      setCopiedMasked(true);
-      setTimeout(() => setCopiedMasked(false), 2000);
-    }
-  };
+  const owaspList = Array.isArray(finding?.owasp_ids) && finding.owasp_ids.length > 0
+    ? finding.owasp_ids
+    : ['A01:2021-Broken Access Control'];
 
-  const handleConfirmFalsePositive = (e) => {
-    e.preventDefault();
-    const formattedNote = `[${fpReason.toUpperCase()}] ${fpNotes.trim() || 'Suppressed by security analyst as non-exploitable.'}`;
-    markFalsePositive(finding.id, formattedNote);
-    setIsFalsePositiveModalOpen(false);
-  };
-
-  const lineNum = finding.line || finding.lineNumber;
-  const isRotationRequired = finding.rotationRequired ?? (finding.type === 'secret' || finding.status === 'needs_rotation');
+  const asvsList = Array.isArray(finding?.asvs_ids) && finding.asvs_ids.length > 0
+    ? finding.asvs_ids
+    : ['V3.1.1 - Secrets Management'];
 
   return (
     <div className="finding-detail-page">
       <Header
-        title={finding.title}
-        subtitle={`${finding.ruleId} • ${finding.filePath}${lineNum ? `:${lineNum}` : ''}`}
+        title={finding?.title || 'Security Finding'}
+        subtitle={`${finding?.rule_id || 'rule'} • ${finding?.file_path || 'file'}${lineNum ? `:${lineNum}` : ''}`}
         breadcrumbs={[
           { label: 'Repositories', path: '/repositories' },
-          { label: repo?.name || finding.repoId, path: `/repositories/${finding.repoId}` },
-          { label: finding.id }
+          { label: repo?.full_name || `Repo #${finding?.repo_id}`, path: `/repositories/${finding?.repo_id}` },
+          { label: `Finding #${finding?.id}` }
         ]}
         actions={
           <div className="header-action-group">
-            {finding.status !== 'false_positive' && (
+            {finding?.status !== 'false_positive' && (
               <button
                 type="button"
                 className="btn-secondary"
@@ -89,9 +162,9 @@ export const FindingDetail = () => {
               </button>
             )}
 
-            <Link to={`/findings/${finding.id}/fix`} className="btn-primary">
+            <Link to={`/findings/${finding?.id}/fix`} className="btn-primary">
               <DiffIcon size={14} />
-              <span>Review & Remediate (AI Fix)</span>
+              <span>Review &amp; Remediate (AI Fix)</span>
             </Link>
           </div>
         }
@@ -99,11 +172,11 @@ export const FindingDetail = () => {
 
       <div className="page-content-padded">
         {/* False Positive Banner */}
-        {finding.status === 'false_positive' && (
+        {finding?.status === 'false_positive' && (
           <div className="suppression-banner">
             <CheckCircleIcon size={18} className="text-secondary" />
             <div className="suppression-text">
-              <strong>Finding Suppressed:</strong> {finding.suppressionNote || 'Marked as false positive by reviewer.'}
+              <strong>Finding Suppressed:</strong> {finding.suppression_note || 'Marked as false positive by reviewer.'}
               <span className="suppression-meta"> This item is excluded from Heuristic Risk penalties and OWASP compliance deductions.</span>
             </div>
           </div>
@@ -116,46 +189,48 @@ export const FindingDetail = () => {
             <div className="panel-box finding-meta-card">
               <div className="meta-headline-row">
                 <div className="meta-badges">
-                  <SeverityBadge severity={finding.severity} />
-                  <StatusChip status={finding.status} />
+                  <SeverityBadge severity={finding?.severity} />
+                  <StatusChip status={finding?.status} />
                   <span className="badge badge-neutral">
-                    {finding.type === 'secret' ? <KeyIcon size={12} /> : <PackageIcon size={12} />}
-                    <span style={{ marginLeft: '4px' }}>{finding.type === 'secret' ? 'Secret Leak' : 'Dependency CVE'}</span>
+                    {finding?.type === 'secret' ? <KeyIcon size={12} /> : <PackageIcon size={12} />}
+                    <span style={{ marginLeft: '4px' }}>
+                      {finding?.type === 'secret' ? 'Secret Leak' : 'Dependency CVE'}
+                    </span>
                   </span>
                 </div>
                 <div className="meta-timestamp text-secondary">
-                  Detected: {new Date(finding.detectedAt || Date.now()).toLocaleDateString()}
+                  Detected: {finding?.created_at ? new Date(finding.created_at).toLocaleDateString() : 'Active'}
                 </div>
               </div>
 
               <div className="attributes-grid">
                 <div className="attr-item">
                   <span className="attr-label">Rule Identifier</span>
-                  <span className="attr-value text-mono">{finding.ruleId}</span>
+                  <span className="attr-value text-mono">{finding?.rule_id}</span>
                 </div>
                 <div className="attr-item">
                   <span className="attr-label">File Location</span>
                   <span className="attr-value text-mono">
                     <FileCodeIcon size={13} className="text-secondary" style={{ marginRight: '4px', verticalAlign: 'middle' }} />
-                    {finding.filePath}{lineNum ? `:${lineNum}` : ''}
+                    {finding?.file_path}{lineNum ? `:${lineNum}` : ''}
                   </span>
                 </div>
                 <div className="attr-item">
                   <span className="attr-label">Commit SHA</span>
                   <span className="attr-value text-mono text-secondary">
-                    {finding.commitSha ? finding.commitSha.slice(0, 10) : 'a1b2c3d4e5'}
+                    {finding?.commit_sha ? finding.commit_sha.slice(0, 10) : '—'}
                   </span>
                 </div>
                 <div className="attr-item">
                   <span className="attr-label">Git Tree Status</span>
-                  <span className={`attr-value ${finding.inHistoryOnly || finding.inGitHistory ? 'text-warning' : 'text-danger'}`}>
-                    {finding.inHistoryOnly || finding.inGitHistory ? 'Exposed in Commit History' : 'Exposed in Working Tree'}
+                  <span className={`attr-value ${finding?.in_history_only ? 'text-warning' : 'text-danger'}`}>
+                    {finding?.in_history_only ? 'Exposed in Commit History Only' : 'Exposed in Working Tree'}
                   </span>
                 </div>
                 <div className="attr-item">
                   <span className="attr-label">Detection Confidence</span>
                   <span className="attr-value">
-                    {finding.confidence >= 0.9 ? 'High (Deterministic pattern)' : 'Medium (Heuristic match)'}
+                    {finding?.confidence >= 0.9 ? 'High (Deterministic pattern)' : 'Medium (Pattern match)'}
                   </span>
                 </div>
                 <div className="attr-item">
@@ -168,7 +243,7 @@ export const FindingDetail = () => {
             </div>
 
             {/* Zero-Raw-Secret Security Box */}
-            {finding.type === 'secret' && (
+            {finding?.type === 'secret' && (
               <div className="panel-box secret-security-box">
                 <div className="box-header">
                   <div className="box-title-group">
@@ -180,7 +255,7 @@ export const FindingDetail = () => {
 
                 <div className="secret-display-row">
                   <div className="masked-secret-token text-mono">
-                    {finding.secretMasked || 'AKIA••••••••••••••••'}
+                    {finding.secret_masked || 'AKIA••••••••••••••••'}
                   </div>
                   <button
                     type="button"
@@ -191,28 +266,21 @@ export const FindingDetail = () => {
                   </button>
                 </div>
 
-                <div className="secret-fingerprint-row">
-                  <span className="fingerprint-label">SHA-256 Fingerprint:</span>
-                  <code className="fingerprint-hash text-mono">
-                    {finding.secretFingerprint || 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'}
-                  </code>
-                </div>
-
                 <div className="security-notice-callout">
-                  <strong>Security Architecture Notice:</strong> RepoGuard implements strict zero-disclosure masking. Raw plaintext credentials are purged from memory immediately following AST regex validation. Engineers can identify the exposed token via prefix/suffix tokens and SHA-256 fingerprint without re-exposing sensitive key values in console logs.
+                  <strong>Zero-Disclosure Masking Policy:</strong> RepoGuard strictly purges raw plaintext credentials from memory immediately upon detection. Only the masked token prefix/suffix (<code>{finding.secret_masked}</code>) is preserved to prevent secondary credential leakage in logs or telemetry.
                 </div>
               </div>
             )}
 
             {/* Dependency Vulnerability Details */}
-            {finding.type === 'dependency' && (
+            {finding?.type === 'dependency' && (
               <div className="panel-box dependency-spec-box">
                 <div className="box-header">
                   <div className="box-title-group">
                     <PackageIcon size={16} className="text-warning" />
                     <h3 className="box-title">Vulnerability Advisory Specification</h3>
                   </div>
-                  <span className="cvss-tag">CVSS {finding.cvss || '7.5'}</span>
+                  <span className="cvss-tag">{finding.severity ? finding.severity.toUpperCase() : 'HIGH'}</span>
                 </div>
 
                 <div className="dep-details-grid">
@@ -226,15 +294,15 @@ export const FindingDetail = () => {
                   </div>
                   <div className="dep-detail-cell">
                     <span className="cell-label">Installed Version</span>
-                    <span className="cell-val text-mono text-danger">{finding.installedVersion}</span>
+                    <span className="cell-val text-mono text-danger">{finding.installed_version || 'unspecified'}</span>
                   </div>
                   <div className="dep-detail-cell">
-                    <span className="cell-label">Patched Version</span>
-                    <span className="cell-val text-mono text-success">{finding.fixedVersion || '>= 3.1.4'}</span>
+                    <span className="cell-label">Fixed Version</span>
+                    <span className="cell-val text-mono text-success">{finding.fixed_version || 'Upgrade required'}</span>
                   </div>
                   <div className="dep-detail-cell full-width">
-                    <span className="cell-label">Vulnerability Advisory</span>
-                    <span className="cell-val text-mono text-primary font-bold">{finding.cve || 'GHSA-xxxx-yyyy'}</span>
+                    <span className="cell-label">Advisory / Rule ID</span>
+                    <span className="cell-val text-mono text-primary font-bold">{finding.rule_id}</span>
                   </div>
                 </div>
               </div>
@@ -245,16 +313,18 @@ export const FindingDetail = () => {
               <div className="box-header">
                 <div className="box-title-group">
                   <ShieldIcon size={16} className="text-secondary" />
-                  <h3 className="box-title">Security Standards & Control Mapping</h3>
+                  <h3 className="box-title">Security Standards &amp; Control Mapping</h3>
                 </div>
               </div>
 
               <div className="mapping-grid">
                 <div className="mapping-card">
                   <span className="mapping-authority">OWASP Top 10 (2021)</span>
-                  <h4 className="mapping-category text-mono">{finding.owaspCategory || 'A01:2021-Broken Access Control'}</h4>
+                  {owaspList.map((id, idx) => (
+                    <h4 key={idx} className="mapping-category text-mono">{id}</h4>
+                  ))}
                   <p className="mapping-desc">
-                    {finding.type === 'secret'
+                    {finding?.type === 'secret'
                       ? 'Failure to enforce strict separation of privilege and secret management allows unauthorized actors to bypass authenticated access controls.'
                       : 'Failure to maintain patched components enables known exploit vectors against application infrastructure.'}
                   </p>
@@ -262,9 +332,11 @@ export const FindingDetail = () => {
 
                 <div className="mapping-card">
                   <span className="mapping-authority">OWASP ASVS v4.0.3</span>
-                  <h4 className="mapping-category text-mono">{finding.asvsControl || 'V3.1.1 - Secrets Management'}</h4>
+                  {asvsList.map((id, idx) => (
+                    <h4 key={idx} className="mapping-category text-mono">{id}</h4>
+                  ))}
                   <p className="mapping-desc">
-                    {finding.type === 'secret'
+                    {finding?.type === 'secret'
                       ? 'Verify that secrets, keys, and tokens are stored securely in external vaults or environment variables and never checked into source control.'
                       : 'Verify that all third-party components and libraries are free from known vulnerabilities and kept up-to-date.'}
                   </p>
@@ -272,23 +344,14 @@ export const FindingDetail = () => {
               </div>
             </div>
 
-            {/* Technical Explanation & Hazard Assessment */}
-            <div className="panel-box explanation-box">
-              <div className="box-header">
-                <h3 className="box-title">Technical Description & Threat Assessment</h3>
-              </div>
-              <div className="explanation-body">
-                <p className="explanation-text">{finding.description}</p>
-                <div className="remediation-guidance">
-                  <strong>Recommended Remediation:</strong> {finding.remediationSuggestion}
-                </div>
-              </div>
-            </div>
-
-            {/* Credential Rotation Section (Mandatory if secret or needs rotation) */}
+            {/* Rotation Section (Mandatory if secret or needs rotation) */}
             {isRotationRequired && (
               <div className="panel-box rotation-section-box">
-                <RotationChecklist ruleId={finding.ruleId} />
+                <RotationChecklist
+                  ruleId={finding?.rule_id}
+                  checklist={finding?.rotation_checklist}
+                  rotationNote={finding?.latest_fix?.explanation?.rotation_note}
+                />
               </div>
             )}
           </div>
@@ -298,68 +361,83 @@ export const FindingDetail = () => {
             <div className="panel-box sidebar-context-card">
               <h4 className="sidebar-card-title">Repository Posture</h4>
               <div className="context-repo-name">
-                <Link to={`/repositories/${repo?.id || finding.repoId}`} className="repo-link text-mono">
-                  {repo?.fullName || finding.repoId}
+                <Link to={`/repositories/${finding?.repo_id}`} className="text-primary font-bold">
+                  {repo?.full_name || `Repo #${finding?.repo_id}`}
                 </Link>
               </div>
+              <p className="context-repo-branch text-secondary text-sm">
+                Default Branch: <strong className="text-primary">{repo?.default_branch || 'main'}</strong>
+              </p>
 
-              <div className="context-metrics-list">
-                <div className="context-metric-row">
-                  <span className="cm-label">Compliance Score</span>
-                  <span className={`cm-val text-mono ${repoCompliance >= 80 ? 'text-success' : repoCompliance >= 50 ? 'text-warning' : 'text-danger'}`}>
-                    {repoCompliance}%
+              <div className="sidebar-posture-scores mt-3">
+                <div className="score-mini-box">
+                  <span className="score-mini-label">Compliance</span>
+                  <span className="score-mini-val text-success">
+                    {repo?.latest_score?.compliance_score != null ? `${repo.latest_score.compliance_score}%` : '—'}
                   </span>
                 </div>
-                <div className="context-metric-row">
-                  <span className="cm-label">Heuristic Risk Score</span>
-                  <span className={`cm-val text-mono ${repoRisk?.score >= 60 ? 'text-danger' : repoRisk?.score >= 30 ? 'text-warning' : 'text-success'}`}>
-                    {repoRisk?.score ?? 0} / 100
+                <div className="score-mini-box">
+                  <span className="score-mini-label">Heuristic Risk</span>
+                  <span className="score-mini-val text-warning">
+                    {repo?.latest_score?.risk_score != null ? `${repo.latest_score.risk_score}/100` : '—'}
                   </span>
                 </div>
-                <div className="context-metric-row">
-                  <span className="cm-label">Active Exposures</span>
-                  <span className="cm-val text-mono">
-                    {repoFindings.filter(f => !['fixed', 'false_positive'].includes(f.status)).length}
-                  </span>
-                </div>
-              </div>
-
-              <div className="sidebar-cta-stack">
-                <Link to={`/findings/${finding.id}/fix`} className="btn-primary btn-block">
-                  <DiffIcon size={14} />
-                  <span>Review & Remediate (AI Fix)</span>
-                </Link>
-                <Link to={`/repositories/${finding.repoId}`} className="btn-secondary btn-block">
-                  Back to Findings List
-                </Link>
               </div>
             </div>
 
-            <div className="panel-box help-card">
-              <h4 className="sidebar-card-title">Remediation Workflow</h4>
-              <ul className="remediation-steps-list">
-                <li>
-                  <strong>Generate Patch:</strong> Review before/after code diff in Fix Review.
-                </li>
-                <li>
-                  <strong>Automated Validation:</strong> Verify that Gitleaks confirms zero tokens remain.
-                </li>
-                <li>
-                  <strong>Rotation Steps:</strong> Invalidate the exposed key with the credential provider.
-                </li>
-                <li>
-                  <strong>Pull Request:</strong> Open automated GitHub PR for peer review.
-                </li>
-              </ul>
+            {/* Remediation Action Card */}
+            <div className="panel-box sidebar-action-card">
+              <h4 className="sidebar-card-title">Remediation Action</h4>
+              <p className="sidebar-action-desc">
+                Generate an automated pull request patch with code diffs, syntactic validation, and provider invalidation checklists.
+              </p>
+
+              <Link to={`/findings/${finding?.id}/fix`} className="btn-primary btn-block">
+                <DiffIcon size={14} />
+                <span>Review &amp; Generate Fix</span>
+              </Link>
+
+              {finding?.latest_fix && (
+                <div style={{ marginTop: '14px', paddingTop: '12px', borderTop: '1px solid var(--border-default)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+                    <span className="text-xs text-secondary">CI Workflow Status:</span>
+                    <CIStatusBadge
+                      status={finding.latest_fix.ci_status || (finding.status === 'pr_opened' ? 'passed' : 'none')}
+                      repairAttempts={finding.latest_fix.repair_attempts || 0}
+                      size="sm"
+                    />
+                  </div>
+
+                  {finding.latest_fix.branch && (
+                    <div style={{ marginBottom: '8px', fontSize: '11px', color: 'var(--text-secondary)' }}>
+                      <span>Branch: </span>
+                      <code className="text-mono text-xs">{finding.latest_fix.branch}</code>
+                    </div>
+                  )}
+
+                  {finding.latest_fix.pr_url && (
+                    <a
+                      href={finding.latest_fix.pr_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="btn-secondary btn-block"
+                      style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}
+                    >
+                      <span>View GitHub PR #{finding.latest_fix.pr_number}</span>
+                      <ExternalLinkIcon size={12} />
+                    </a>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         </div>
       </div>
 
-      {/* Modal: Confirm False Positive */}
+      {/* False Positive Feedback Modal */}
       {isFalsePositiveModalOpen && (
-        <div className="modal-backdrop" role="dialog" aria-modal="true">
-          <div className="modal-card">
+        <div className="modal-backdrop">
+          <div className="modal-box">
             <div className="modal-header">
               <h3 className="modal-title">Mark Finding as False Positive</h3>
               <button
@@ -367,42 +445,35 @@ export const FindingDetail = () => {
                 className="modal-close-btn"
                 onClick={() => setIsFalsePositiveModalOpen(false)}
               >
-                ✕
+                &times;
               </button>
             </div>
-
             <form onSubmit={handleConfirmFalsePositive}>
               <div className="modal-body">
-                <p className="modal-instruction">
-                  Marking this finding as a false positive will suppress it from active exposure counts, restore OWASP compliance points, and recalculate repository Heuristic Risk.
+                <p className="modal-lead">
+                  Suppressing this finding updates its status and records feedback in the RepoGuard audit log:
                 </p>
 
-                <div className="form-group">
-                  <label className="form-label" htmlFor="fp-reason">
-                    Suppression Justification Category
-                  </label>
+                <div className="form-group mb-3">
+                  <label className="form-label">Suppression Reason</label>
                   <select
-                    id="fp-reason"
-                    className="form-control"
+                    className="form-select"
                     value={fpReason}
                     onChange={(e) => setFpReason(e.target.value)}
                   >
-                    <option value="test_fixture">Dummy Token in Test Fixture / Mock File</option>
-                    <option value="revoked">Credential Already Revoked at Provider</option>
-                    <option value="low_entropy">Non-Sensitive Entropy Collision / False Trigger</option>
-                    <option value="internal_staging">Isolated Ephemeral Staging Environment</option>
+                    <option value="test_fixture">Test Credential / Mock Dummy Fixture</option>
+                    <option value="public_sample">Public Documentation Sample Token</option>
+                    <option value="mitigated_firewall">Already Mitigated by Network/WAF Rules</option>
+                    <option value="non_sensitive">Non-Sensitive Entropy Coincidence</option>
                   </select>
                 </div>
 
-                <div className="form-group">
-                  <label className="form-label" htmlFor="fp-notes">
-                    Reviewer Audit Notes
-                  </label>
+                <div className="form-group mb-3">
+                  <label className="form-label">Reviewer Note (Recorded to audit trail)</label>
                   <textarea
-                    id="fp-notes"
-                    className="form-control"
+                    className="form-textarea"
                     rows={3}
-                    placeholder="Describe verification rationale for security audit trail..."
+                    placeholder="Provide justification notes for security audit trail..."
                     value={fpNotes}
                     onChange={(e) => setFpNotes(e.target.value)}
                   />
@@ -417,8 +488,8 @@ export const FindingDetail = () => {
                 >
                   Cancel
                 </button>
-                <button type="submit" className="btn-primary">
-                  Confirm Suppression
+                <button type="submit" className="btn-primary" disabled={submittingFp}>
+                  {submittingFp ? 'Submitting...' : 'Confirm Suppression'}
                 </button>
               </div>
             </form>

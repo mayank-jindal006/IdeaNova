@@ -1,17 +1,42 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { NavLink } from 'react-router-dom';
 import { ShieldIcon, DashboardIcon, RepoIcon, RefreshCwIcon } from './icons';
-import { useRepoGuard } from '../context/RepoGuardContext';
+import api from '../api/client';
 
 export const Sidebar = () => {
-  const { metrics, resetAllData } = useRepoGuard();
+  const [stats, setStats] = useState({
+    totalRepos: null,
+    activeFindings: null,
+    avgCompliance: null
+  });
 
-  const handleReset = (e) => {
-    e.preventDefault();
-    if (window.confirm("Reset all repositories, findings, and scan histories to clean initial defaults?")) {
-      resetAllData();
+  const loadStats = async () => {
+    try {
+      const summary = await api.getDashboardSummary();
+      if (summary) {
+        const totalRepos = summary.totals?.repos ?? 0;
+        const totalFindings = summary.totals?.findings ?? 0;
+        const scores = summary.repo_scores || [];
+        const avgComp = scores.length > 0
+          ? Math.round(scores.reduce((a, b) => a + (b.compliance_score || 0), 0) / scores.length)
+          : null;
+
+        setStats({
+          totalRepos,
+          activeFindings: totalFindings,
+          avgCompliance: avgComp
+        });
+      }
+    } catch {
+      // API unreachable
     }
   };
+
+  useEffect(() => {
+    loadStats();
+    const timer = setInterval(loadStats, 10000);
+    return () => clearInterval(timer);
+  }, []);
 
   return (
     <aside className="app-sidebar">
@@ -43,7 +68,9 @@ export const Sidebar = () => {
         >
           <RepoIcon size={16} />
           <span>Repositories</span>
-          <span className="nav-counter">{metrics.totalRepos}</span>
+          {stats.totalRepos != null && (
+            <span className="nav-counter">{stats.totalRepos}</span>
+          )}
         </NavLink>
       </nav>
 
@@ -51,23 +78,25 @@ export const Sidebar = () => {
         <div className="sidebar-telemetry">
           <div className="telemetry-item">
             <span className="telemetry-label">Active Exposures</span>
-            <span className={`telemetry-val ${metrics.activeFindingsCount > 0 ? 'text-danger' : 'text-success'}`}>
-              {metrics.activeFindingsCount}
+            <span className={`telemetry-val ${stats.activeFindings > 0 ? 'text-danger' : stats.activeFindings === 0 ? 'text-success' : 'text-muted'}`}>
+              {stats.activeFindings != null ? stats.activeFindings : '—'}
             </span>
           </div>
           <div className="telemetry-item">
             <span className="telemetry-label">Avg Compliance</span>
-            <span className="telemetry-val text-mono">{metrics.avgCompliance}%</span>
+            <span className="telemetry-val text-mono">
+              {stats.avgCompliance != null ? `${stats.avgCompliance}%` : '—'}
+            </span>
           </div>
         </div>
 
         <button 
           className="sidebar-reset-btn" 
-          onClick={handleReset}
-          title="Reset demo data to initial state"
+          onClick={loadStats}
+          title="Refresh security telemetry"
         >
           <RefreshCwIcon size={12} />
-          <span>Reset Demo Data</span>
+          <span>Refresh Telemetry</span>
         </button>
       </div>
     </aside>

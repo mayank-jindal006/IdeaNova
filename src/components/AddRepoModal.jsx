@@ -1,10 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { XIcon, PlusIcon } from './icons';
-import { useRepoGuard } from '../context/RepoGuardContext';
+import api from '../api/client';
 
-export const AddRepoModal = ({ isOpen, onClose, onRepoAdded }) => {
-  const { addRepository } = useRepoGuard();
-
+export const AddRepoModal = ({ isOpen, onClose, onAdd, onRepoAdded }) => {
   const [fullName, setFullName] = useState('');
   const [defaultBranch, setDefaultBranch] = useState('main');
   const [error, setError] = useState('');
@@ -32,7 +30,7 @@ export const AddRepoModal = ({ isOpen, onClose, onRepoAdded }) => {
 
   if (!isOpen) return null;
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
 
@@ -49,8 +47,12 @@ export const AddRepoModal = ({ isOpen, onClose, onRepoAdded }) => {
 
     setSubmitting(true);
     try {
-      const created = addRepository(trimmed, defaultBranch);
-      onRepoAdded?.(created);
+      if (onAdd) {
+        await onAdd(trimmed);
+      } else {
+        const created = await api.createRepository(trimmed);
+        onRepoAdded?.(created);
+      }
       onClose();
     } catch (err) {
       setError(err.message || 'Failed to add repository.');

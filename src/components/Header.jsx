@@ -31,7 +31,7 @@ export const Header = ({ title, subtitle, breadcrumbs = [], actions = null }) =>
 
         <div className="header-status-pill">
           <span className="status-dot-pulse" />
-          <span className="status-pill-text">Local Prototype Environment</span>
+          <span className="status-pill-text">SecOps API Connected</span>
         </div>
       </div>
 

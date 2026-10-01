@@ -1,71 +1,122 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { useRepoGuard } from '../context/RepoGuardContext';
+import api from '../api/client';
 import Header from '../components/Header';
 import SeverityBadge from '../components/SeverityBadge';
 import StatusChip from '../components/StatusChip';
+import CIStatusBadge from '../components/CIStatusBadge';
+import AgentActivityTimeline from '../components/AgentActivityTimeline';
 import RiskFactorBreakdown from '../components/RiskFactorBreakdown';
 import EmptyState from '../components/EmptyState';
 import {
+  ShieldIcon,
+  AlertTriangleIcon,
   RefreshCwIcon,
   SearchIcon,
-  CheckCircleIcon,
-  ClockIcon
+  XIcon,
+  KeyIcon,
+  PackageIcon,
+  FileCodeIcon,
+  DiffIcon
 } from '../components/icons';
-import {
-  calculateComplianceScore,
-  calculateHeuristicRisk,
-  getOWASPComplianceBreakdown
-} from '../services/repoGuardService';
 
 export const RepositoryDetail = () => {
   const { repoId } = useParams();
   const navigate = useNavigate();
-  const { repositories, findings, scans } = useRepoGuard();
 
-  const [activeTab, setActiveTab] = useState('overview'); // 'overview' | 'findings' | 'scans' | 'compliance' | 'risk'
+  const [repo, setRepo] = useState(null);
+  const [findings, setFindings] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [errorText, setErrorText] = useState(null);
 
-  // Finding filters
-  const [filterType, setFilterType] = useState('');
-  const [filterSeverity, setFilterSeverity] = useState('');
-  const [filterStatus, setFilterStatus] = useState('');
+  // Tabs
+  const [activeTab, setActiveTab] = useState('findings'); // 'findings' | 'agent' | 'posture'
+
+  // Auto-Fix on Push state (v1.2)
+  const [autoFixEnabled, setAutoFixEnabled] = useState(false);
+  const [updatingAutoFix, setUpdatingAutoFix] = useState(false);
+
+  // Filters
+  const [typeFilter, setTypeFilter] = useState('all'); // 'all' | 'secret' | 'dependency'
+  const [severityFilter, setSeverityFilter] = useState('all'); // 'all' | 'critical' | 'high' | 'medium' | 'low'
+  const [statusFilter, setStatusFilter] = useState('all'); // 'all' | 'open' | 'fix_proposed' | 'pr_opened' | 'fixed' | 'false_positive' | 'needs_rotation'
   const [searchQuery, setSearchQuery] = useState('');
 
-  const repo = repositories.find(r => r.id === repoId);
-  const repoFindings = useMemo(() => {
-    return findings.filter(f => f.repoId === repoId);
-  }, [findings, repoId]);
+  useEffect(() => {
+    let isMounted = true;
+    const fetchRepoData = async () => {
+      setLoading(true);
+      setErrorText(null);
+      try {
+        const repoData = await api.getRepository(repoId);
+        if (!isMounted) return;
+        setRepo(repoData);
+        setAutoFixEnabled(Boolean(repoData?.auto_fix_enabled));
 
-  const repoScans = useMemo(() => {
-    return scans.filter(s => s.repoId === repoId);
-  }, [scans, repoId]);
+        const findingsData = await api.getRepositoryFindings(repoId);
+        if (!isMounted) return;
+        setFindings(findingsData || []);
+      } catch (err) {
+        if (!isMounted) return;
+        setErrorText(err.message || 'Failed to load repository details from API.');
+      } finally {
+        if (isMounted) setLoading(false);
+      }
+    };
 
-  // Filtered findings for the Findings tab (called unconditionally)
+    fetchRepoData();
+    return () => {
+      isMounted = false;
+    };
+  }, [repoId]);
+
+  const handleToggleAutoFix = async () => {
+    const nextVal = !autoFixEnabled;
+    setAutoFixEnabled(nextVal);
+    setUpdatingAutoFix(true);
+    try {
+      await api.updateRepository(repoId, { auto_fix_enabled: nextVal });
+    } catch (err) {
+      setAutoFixEnabled(!nextVal); // revert on failure
+      setErrorText(`Failed to update auto-fix configuration: ${err.message}`);
+    } finally {
+      setUpdatingAutoFix(false);
+    }
+  };
+
+  // Filtered findings list
   const filteredFindings = useMemo(() => {
-    return repoFindings.filter(f => {
-      if (filterType && f.type !== filterType) return false;
-      if (filterSeverity && f.severity !== filterSeverity) return false;
-      if (filterStatus && f.status !== filterStatus) return false;
-      if (searchQuery) {
-        const q = searchQuery.toLowerCase().trim();
-        const matches = (
-          f.title.toLowerCase().includes(q) ||
-          f.ruleId.toLowerCase().includes(q) ||
-          f.filePath.toLowerCase().includes(q) ||
-          (f.package && f.package.toLowerCase().includes(q))
-        );
-        if (!matches) return false;
+    return findings.filter((f) => {
+      if (typeFilter !== 'all' && f.type !== typeFilter) return false;
+      if (severityFilter !== 'all' && f.severity !== severityFilter) return false;
+      if (statusFilter !== 'all' && f.status !== statusFilter) return false;
+
+      if (searchQuery.trim()) {
+        const q = searchQuery.trim().toLowerCase();
+        const matchesTitle = (f.title || '').toLowerCase().includes(q);
+        const matchesRule = (f.rule_id || '').toLowerCase().includes(q);
+        const matchesPath = (f.file_path || '').toLowerCase().includes(q);
+        if (!matchesTitle && !matchesRule && !matchesPath) return false;
       }
       return true;
     });
-  }, [repoFindings, filterType, filterSeverity, filterStatus, searchQuery]);
+  }, [findings, typeFilter, severityFilter, statusFilter, searchQuery]);
 
-  if (!repo) {
+  if (loading) {
+    return (
+      <div className="page-content-padded text-center" style={{ paddingTop: '80px' }}>
+        <RefreshCwIcon size={24} className="spin-icon text-secondary" />
+        <p className="text-secondary mt-3">Loading repository findings &amp; security posture...</p>
+      </div>
+    );
+  }
+
+  if (!repo && errorText) {
     return (
       <div className="page-content-padded">
         <EmptyState
           title="Repository Not Found"
-          message={`The repository with ID "${repoId}" could not be located.`}
+          message={`Repository #${repoId} could not be located.`}
           actionText="Back to Repositories"
           onAction={() => navigate('/repositories')}
         />
@@ -73,452 +124,340 @@ export const RepositoryDetail = () => {
     );
   }
 
-  // Calculated metrics
-  const complianceScore = calculateComplianceScore(repoFindings);
-  const riskData = calculateHeuristicRisk(repo, repoFindings);
-  const openCount = repoFindings.filter(f => !['fixed', 'false_positive'].includes(f.status)).length;
-  const critCount = repoFindings.filter(f => f.severity === 'critical' && !['fixed', 'false_positive'].includes(f.status)).length;
-  const owaspControls = getOWASPComplianceBreakdown(repoFindings);
+  const latestScore = repo?.latest_score;
+  const complianceScore = latestScore?.compliance_score ?? null;
+  const riskScore = latestScore?.risk_score ?? null;
+  const riskFactors = latestScore?.risk_factors || [];
 
   return (
     <div className="repository-detail-page">
       <Header
-        title={repo.name}
-        subtitle={repo.fullName}
+        title={repo?.full_name || `Repository #${repoId}`}
+        subtitle={`Branch: ${repo?.default_branch || 'main'} • Last scan: ${repo?.last_scanned_at ? new Date(repo.last_scanned_at).toLocaleString() : 'Never'}`}
         breadcrumbs={[
           { label: 'Repositories', path: '/repositories' },
-          { label: repo.name }
+          { label: repo?.full_name || `Repo #${repoId}` }
         ]}
         actions={
-          <Link to={`/repositories/${repo.id}/scan`} className="btn-primary">
-            <RefreshCwIcon size={14} />
-            <span>Run Security Scan</span>
-          </Link>
+          <div className="header-action-group">
+            <Link to={`/repositories/${repo?.id}/scan`} className="btn-primary">
+              <RefreshCwIcon size={14} />
+              <span>Run Security Scan</span>
+            </Link>
+          </div>
         }
       />
 
       <div className="page-content-padded">
-        {/* Repo Meta Overview Bar */}
-        <div className="repo-meta-bar">
-          <div className="meta-item">
-            <span className="meta-label">Default Branch:</span>
-            <span className="meta-value text-mono">{repo.defaultBranch}</span>
-          </div>
-          <div className="meta-item">
-            <span className="meta-label">Last Scanned:</span>
-            <span className="meta-value">
-              {repo.lastScannedAt ? new Date(repo.lastScannedAt).toLocaleString() : 'Never'}
-            </span>
-          </div>
-          <div className="meta-item">
-            <span className="meta-label">Primary Stack:</span>
-            <span className="meta-value font-medium">{repo.language}</span>
-          </div>
-          <div className="meta-item">
-            <span className="meta-label">Git Commits (90d):</span>
-            <span className="meta-value text-mono">{repo.signals?.commitCount90d || 0}</span>
-          </div>
-        </div>
-
-        {/* Top KPI Cards */}
-        <div className="kpi-grid">
-          <div className="kpi-card">
-            <span className="kpi-label">Compliance Index</span>
-            <span className={`kpi-value text-mono ${complianceScore >= 80 ? 'text-success' : complianceScore >= 50 ? 'text-warning' : 'text-danger'}`}>
-              {complianceScore}%
-            </span>
-            <span className="kpi-meta text-muted">OWASP & ASVS evaluated</span>
-          </div>
-
-          <div className="kpi-card">
-            <span className="kpi-label">Heuristic Risk Score</span>
-            <span className={`kpi-value text-mono ${riskData.score >= 60 ? 'text-danger' : riskData.score >= 30 ? 'text-warning' : 'text-success'}`}>
-              {riskData.score} <span className="text-sm text-muted">/ 100</span>
-            </span>
-            <span className="kpi-meta text-muted">Weighted signals</span>
-          </div>
-
-          <div className="kpi-card">
-            <span className="kpi-label">Open Findings</span>
-            <span className={`kpi-value text-mono ${openCount > 0 ? 'text-danger' : 'text-success'}`}>
-              {openCount}
-            </span>
-            <span className="kpi-meta text-muted">Unresolved exposures</span>
-          </div>
-
-          <div className="kpi-card">
-            <span className="kpi-label">Critical Vulnerabilities</span>
-            <span className={`kpi-value text-mono ${critCount > 0 ? 'text-danger' : 'text-muted'}`}>
-              {critCount}
-            </span>
-            <span className="kpi-meta text-muted">Immediate action required</span>
-          </div>
-        </div>
-
-        {/* Tab Navigation */}
-        <div className="tabs-bar">
-          <button
-            className={`tab-btn ${activeTab === 'overview' ? 'tab-btn-active' : ''}`}
-            onClick={() => setActiveTab('overview')}
-          >
-            Overview
-          </button>
-          <button
-            className={`tab-btn ${activeTab === 'findings' ? 'tab-btn-active' : ''}`}
-            onClick={() => setActiveTab('findings')}
-          >
-            Findings <span className="tab-counter">{repoFindings.length}</span>
-          </button>
-          <button
-            className={`tab-btn ${activeTab === 'scans' ? 'tab-btn-active' : ''}`}
-            onClick={() => setActiveTab('scans')}
-          >
-            Scan History <span className="tab-counter">{repoScans.length}</span>
-          </button>
-          <button
-            className={`tab-btn ${activeTab === 'compliance' ? 'tab-btn-active' : ''}`}
-            onClick={() => setActiveTab('compliance')}
-          >
-            Compliance Posture
-          </button>
-          <button
-            className={`tab-btn ${activeTab === 'risk' ? 'tab-btn-active' : ''}`}
-            onClick={() => setActiveTab('risk')}
-          >
-            Heuristic Risk Breakdown
-          </button>
-        </div>
-
-        {/* TAB 1: OVERVIEW */}
-        {activeTab === 'overview' && (
-          <div className="tab-content">
-            <div className="grid-2col">
-              {/* Left Column: Urgent Findings */}
-              <div className="card">
-                <div className="card-header">
-                  <h3 className="card-title">Active Security Findings</h3>
-                  <button className="btn-sm btn-secondary" onClick={() => setActiveTab('findings')}>
-                    View All ({repoFindings.length}) &rarr;
-                  </button>
-                </div>
-                {repoFindings.filter(f => !['fixed', 'false_positive'].includes(f.status)).length === 0 ? (
-                  <EmptyState
-                    icon={CheckCircleIcon}
-                    title="No Open Findings"
-                    message="All detected credentials and dependency packages in this repository are secure or remediated."
-                  />
-                ) : (
-                  <div className="table-responsive">
-                    <table className="data-table">
-                      <thead>
-                        <tr>
-                          <th>Severity</th>
-                          <th>Rule / Vulnerability</th>
-                          <th>Location</th>
-                          <th>Status</th>
-                          <th className="text-right">Action</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {repoFindings
-                          .filter(f => !['fixed', 'false_positive'].includes(f.status))
-                          .slice(0, 5)
-                          .map((f) => (
-                            <tr key={f.id}>
-                              <td><SeverityBadge severity={f.severity} /></td>
-                              <td>
-                                <Link to={`/findings/${f.id}`} className="font-semibold text-mono text-link">
-                                  {f.ruleId}
-                                </Link>
-                              </td>
-                              <td className="text-mono text-xs">{f.filePath}{f.line ? `:${f.line}` : ''}</td>
-                              <td><StatusChip status={f.status} /></td>
-                              <td className="text-right">
-                                <Link to={`/findings/${f.id}/fix`} className="btn-sm btn-primary">
-                                  Fix &rarr;
-                                </Link>
-                              </td>
-                            </tr>
-                          ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </div>
-
-              {/* Right Column: Key Risk Factors */}
-              <div>
-                <RiskFactorBreakdown
-                  factors={riskData.factors}
-                  riskScore={riskData.score}
-                />
-              </div>
+        {/* Error notification if any */}
+        {errorText && (
+          <div className="panel-box error-alert-box mb-4">
+            <div className="alert-top">
+              <AlertTriangleIcon size={18} className="text-danger" />
+              <h3 className="alert-title">Backend API Notice</h3>
             </div>
+            <p className="alert-message">{errorText}</p>
           </div>
         )}
 
-        {/* TAB 2: FINDINGS TABLE */}
+        {/* Auto-Fix on Push Control Card (v1.2) */}
+        <div className="auto-fix-toggle-card">
+          <div className="auto-fix-info">
+            <div className="auto-fix-title-row">
+              <h4 className="auto-fix-title">Continuous Auto-Fix on Push</h4>
+              <span className={`badge ${autoFixEnabled ? 'badge-success' : 'badge-neutral'} text-xs font-mono`}>
+                {autoFixEnabled ? 'ACTIVE (Pushes trigger AI Fix + PR)' : 'OFF (Manual remediation only)'}
+              </span>
+            </div>
+            <p className="auto-fix-desc">
+              When enabled, newly pushed commits detected with hardcoded secrets trigger the self-healing agent to generate fixes, open PRs, and repair CI test failures automatically.
+            </p>
+          </div>
+          <div className="toggle-switch-wrapper">
+            <label className="toggle-switch" title={autoFixEnabled ? "Disable auto-fix on push" : "Enable auto-fix on push"}>
+              <input
+                type="checkbox"
+                checked={autoFixEnabled}
+                onChange={handleToggleAutoFix}
+                disabled={updatingAutoFix}
+              />
+              <span className="toggle-slider" />
+            </label>
+            <span className="text-xs text-secondary font-mono">
+              {updatingAutoFix ? 'Saving...' : autoFixEnabled ? 'ON' : 'OFF'}
+            </span>
+          </div>
+        </div>
+
+        {/* Navigation Tabs */}
+        <div className="timeline-tabs">
+          <button
+            type="button"
+            className={`timeline-tab-btn ${activeTab === 'findings' ? 'active' : ''}`}
+            onClick={() => setActiveTab('findings')}
+          >
+            <KeyIcon size={14} />
+            <span>Security Findings ({findings.length})</span>
+          </button>
+          <button
+            type="button"
+            className={`timeline-tab-btn ${activeTab === 'agent' ? 'active' : ''}`}
+            onClick={() => setActiveTab('agent')}
+          >
+            <RefreshCwIcon size={14} />
+            <span>Agent Activity &amp; Self-Healing Timeline</span>
+            <span className="badge badge-primary text-xs" style={{ padding: '1px 6px' }}>v1.2</span>
+          </button>
+          <button
+            type="button"
+            className={`timeline-tab-btn ${activeTab === 'posture' ? 'active' : ''}`}
+            onClick={() => setActiveTab('posture')}
+          >
+            <ShieldIcon size={14} />
+            <span>Posture &amp; Heuristic Risk</span>
+          </button>
+        </div>
+
+        {/* TAB 1: Security Findings Table */}
         {activeTab === 'findings' && (
-          <div className="tab-content">
-            <div className="card">
-              <div className="card-header findings-header">
-                <div>
-                  <h3 className="card-title">Repository Findings ({filteredFindings.length})</h3>
-                  <p className="card-subtitle">Detailed security findings discovered during automated code scanning.</p>
-                </div>
+          <>
+            {/* Findings Filter Toolbar */}
+            <div className="table-toolbar">
+              <div className="search-box">
+                <SearchIcon size={14} className="search-icon" />
+                <input
+                  type="text"
+                  className="search-input"
+                  placeholder="Filter findings by rule, file path, or title..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                />
+                {searchQuery && (
+                  <button type="button" className="search-clear-btn" onClick={() => setSearchQuery('')}>
+                    <XIcon size={12} />
+                  </button>
+                )}
+              </div>
 
-                {/* Filter Toolbar */}
-                <div className="findings-filter-bar">
-                  <div className="search-box-mini">
-                    <SearchIcon size={12} className="search-icon" />
-                    <input
-                      type="text"
-                      className="search-input-mini"
-                      placeholder="Filter by title, rule, path..."
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                    />
-                  </div>
-
-                  <select
-                    className="filter-select"
-                    value={filterType}
-                    onChange={(e) => setFilterType(e.target.value)}
-                  >
-                    <option value="">All Types</option>
+              <div className="toolbar-actions">
+                <div className="filter-group">
+                  <label className="filter-label">Type:</label>
+                  <select className="filter-select" value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
+                    <option value="all">All Types</option>
                     <option value="secret">Secrets Only</option>
                     <option value="dependency">Dependencies Only</option>
                   </select>
+                </div>
 
-                  <select
-                    className="filter-select"
-                    value={filterSeverity}
-                    onChange={(e) => setFilterSeverity(e.target.value)}
-                  >
-                    <option value="">All Severities</option>
+                <div className="filter-group">
+                  <label className="filter-label">Severity:</label>
+                  <select className="filter-select" value={severityFilter} onChange={(e) => setSeverityFilter(e.target.value)}>
+                    <option value="all">All Severities</option>
                     <option value="critical">Critical</option>
                     <option value="high">High</option>
                     <option value="medium">Medium</option>
                     <option value="low">Low</option>
                   </select>
+                </div>
 
-                  <select
-                    className="filter-select"
-                    value={filterStatus}
-                    onChange={(e) => setFilterStatus(e.target.value)}
-                  >
-                    <option value="">All Statuses</option>
+                <div className="filter-group">
+                  <label className="filter-label">Status:</label>
+                  <select className="filter-select" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+                    <option value="all">All Statuses</option>
                     <option value="open">Open</option>
-                    <option value="needs_rotation">Needs Rotation</option>
                     <option value="fix_proposed">Fix Proposed</option>
                     <option value="pr_opened">PR Opened</option>
-                    <option value="fixed">Fixed</option>
+                    <option value="needs_rotation">Needs Rotation</option>
                     <option value="false_positive">False Positive</option>
+                    <option value="fixed">Fixed</option>
                   </select>
                 </div>
               </div>
-
-              {filteredFindings.length === 0 ? (
-                <EmptyState
-                  title="No findings match filter criteria"
-                  message="Try clearing your search query or adjusting the filters."
-                  actionText="Reset Filters"
-                  onAction={() => {
-                    setFilterType('');
-                    setFilterSeverity('');
-                    setFilterStatus('');
-                    setSearchQuery('');
-                  }}
-                />
-              ) : (
-                <div className="table-responsive">
-                  <table className="data-table">
-                    <thead>
-                      <tr>
-                        <th>Severity</th>
-                        <th>Type</th>
-                        <th>Vulnerability / Rule ID</th>
-                        <th>Location</th>
-                        <th>Status</th>
-                        <th>Confidence</th>
-                        <th>OWASP Controls</th>
-                        <th className="text-right">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {filteredFindings.map((f) => (
-                        <tr key={f.id}>
-                          <td><SeverityBadge severity={f.severity} /></td>
-                          <td className="text-capitalize font-medium">{f.type}</td>
-                          <td>
-                            <Link to={`/findings/${f.id}`} className="font-semibold text-mono text-link">
-                              {f.ruleId}
-                            </Link>
-                            <div className="text-xs text-muted">{f.title}</div>
-                          </td>
-                          <td className="text-mono text-xs">{f.filePath}{f.line ? `:${f.line}` : ''}</td>
-                          <td><StatusChip status={f.status} /></td>
-                          <td className="text-mono text-xs font-semibold">{Math.round(f.confidence * 100)}%</td>
-                          <td>
-                            {f.owaspIds?.map(id => (
-                              <span key={id} className="badge-owasp">{id}</span>
-                            ))}
-                          </td>
-                          <td className="text-right table-actions-cell">
-                            <Link to={`/findings/${f.id}`} className="btn-sm btn-secondary mr-2">
-                              Inspect
-                            </Link>
-                            <Link to={`/findings/${f.id}/fix`} className="btn-sm btn-primary">
-                              Fix
-                            </Link>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
             </div>
-          </div>
-        )}
 
-        {/* TAB 3: SCANS */}
-        {activeTab === 'scans' && (
-          <div className="tab-content">
+            {/* Findings Data Table */}
             <div className="card">
-              <div className="card-header">
-                <div>
-                  <h3 className="card-title">Scan History</h3>
-                  <p className="card-subtitle">Historical scan executions, discovered exposures, and run durations.</p>
-                </div>
-                <Link to={`/repositories/${repo.id}/scan`} className="btn-sm btn-primary">
-                  <RefreshCwIcon size={12} />
-                  <span>Execute New Scan</span>
-                </Link>
-              </div>
-
-              {repoScans.length === 0 ? (
-                <EmptyState
-                  icon={ClockIcon}
-                  title="No scan history recorded"
-                  message="This repository has not executed an automated security scan yet."
-                  actionText="Run First Scan"
-                  onAction={() => navigate(`/repositories/${repo.id}/scan`)}
-                />
-              ) : (
-                <div className="table-responsive">
-                  <table className="data-table">
-                    <thead>
-                      <tr>
-                        <th>Scan ID</th>
-                        <th>Trigger</th>
-                        <th>Commit SHA</th>
-                        <th>Status</th>
-                        <th>Started At</th>
-                        <th>Duration</th>
-                        <th className="text-right">Findings Discovered</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {repoScans.map((s) => (
-                        <tr key={s.id}>
-                          <td className="font-semibold text-mono">{s.id}</td>
-                          <td className="text-capitalize">{s.trigger}</td>
-                          <td className="text-mono text-xs">{s.commitSha.slice(0, 10)}</td>
-                          <td>
-                            <span className="badge-success text-capitalize">{s.status}</span>
-                          </td>
-                          <td className="text-xs text-secondary">
-                            {new Date(s.startedAt).toLocaleString()}
-                          </td>
-                          <td className="text-mono text-xs">{s.durationSeconds}s</td>
-                          <td className="text-right font-bold text-mono">
-                            {s.findingsCount > 0 ? (
-                              <span className="text-danger">{s.findingsCount}</span>
-                            ) : (
-                              <span className="text-success">0</span>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* TAB 4: COMPLIANCE */}
-        {activeTab === 'compliance' && (
-          <div className="tab-content">
-            <div className="card">
-              <div className="card-header">
-                <div>
-                  <h3 className="card-title">OWASP Top 10 & ASVS Control Mapping</h3>
-                  <p className="card-subtitle">Automated evaluation against standardized industry security benchmarks.</p>
-                </div>
-                <div className="compliance-badge-large">
-                  Score: <strong className="text-success">{complianceScore}%</strong>
-                </div>
-              </div>
-
               <div className="table-responsive">
                 <table className="data-table">
                   <thead>
                     <tr>
-                      <th>Control ID</th>
-                      <th>Standard Control Name</th>
-                      <th>Description</th>
-                      <th>Status</th>
-                      <th className="text-right">Violations</th>
+                      <th>Severity</th>
+                      <th>Finding Title / Rule</th>
+                      <th>Type</th>
+                      <th>File Location</th>
+                      <th>Status &amp; CI</th>
+                      <th className="text-right">Remediation</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {owaspControls.map((ctrl) => (
-                      <tr key={ctrl.id}>
-                        <td className="font-semibold text-mono">{ctrl.id}</td>
-                        <td className="font-medium">{ctrl.name}</td>
-                        <td className="text-xs text-secondary">{ctrl.description}</td>
-                        <td>
-                          {ctrl.status === 'passing' ? (
-                            <span className="badge-success">Passing</span>
-                          ) : (
-                            <span className="badge-danger">Failing</span>
-                          )}
-                        </td>
-                        <td className="text-right">
-                          {ctrl.findingsCount > 0 ? (
-                            <button
-                              className="btn-sm btn-secondary text-danger"
-                              onClick={() => {
-                                setActiveTab('findings');
-                                setSearchQuery(ctrl.id);
-                              }}
-                            >
-                              {ctrl.findingsCount} Issue(s) &rarr;
-                            </button>
-                          ) : (
-                            <span className="text-muted text-xs">None</span>
-                          )}
+                    {filteredFindings.length === 0 ? (
+                      <tr>
+                        <td colSpan={6}>
+                          <EmptyState
+                            title="No Security Findings Found"
+                            message={findings.length === 0 ? "No active findings detected. Run a scan to inspect this repository." : "No findings match the current filter criteria."}
+                          />
                         </td>
                       </tr>
-                    ))}
+                    ) : (
+                      filteredFindings.map((finding) => (
+                        <tr key={finding.id}>
+                          <td>
+                            <SeverityBadge severity={finding.severity} />
+                          </td>
+                          <td>
+                            <div className="finding-title-cell">
+                              <Link to={`/findings/${finding.id}`} className="finding-title-link">
+                                {finding.title}
+                              </Link>
+                              <span className="finding-rule-sub text-mono text-muted text-xs">
+                                {finding.rule_id}
+                              </span>
+                            </div>
+                          </td>
+                          <td>
+                            <span className="badge badge-neutral text-xs">
+                              {finding.type === 'secret' ? <KeyIcon size={11} style={{ marginRight: '4px' }} /> : <PackageIcon size={11} style={{ marginRight: '4px' }} />}
+                              {finding.type === 'secret' ? 'Secret' : 'Dependency'}
+                            </span>
+                          </td>
+                          <td>
+                            <span className="text-mono text-xs text-secondary">
+                              <FileCodeIcon size={11} style={{ marginRight: '4px', verticalAlign: 'middle' }} />
+                              {finding.file_path}{finding.line ? `:${finding.line}` : ''}
+                            </span>
+                          </td>
+                          <td>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignItems: 'flex-start' }}>
+                              <StatusChip status={finding.status} />
+                              {(finding.status === 'pr_opened' || finding.ci_status) && (
+                                <CIStatusBadge
+                                  status={finding.ci_status || (finding.status === 'pr_opened' ? 'passed' : 'none')}
+                                  size="sm"
+                                />
+                              )}
+                            </div>
+                          </td>
+                          <td className="text-right">
+                            <div className="table-actions-group">
+                              <Link to={`/findings/${finding.id}`} className="btn-secondary btn-sm">
+                                Details
+                              </Link>
+                              <Link to={`/findings/${finding.id}/fix`} className="btn-primary btn-sm">
+                                <DiffIcon size={12} style={{ marginRight: '4px' }} />
+                                Fix / PR
+                              </Link>
+                            </div>
+                          </td>
+                        </tr>
+                      ))
+                    )}
                   </tbody>
                 </table>
               </div>
             </div>
-          </div>
+          </>
         )}
 
-        {/* TAB 5: RISK */}
-        {activeTab === 'risk' && (
-          <div className="tab-content">
-            <RiskFactorBreakdown
-              factors={riskData.factors}
-              riskScore={riskData.score}
-            />
-          </div>
+        {/* TAB 2: Agent Activity & Self-Healing Timeline (v1.2) */}
+        {activeTab === 'agent' && (
+          <AgentActivityTimeline
+            repoId={repoId}
+            title={`Self-Healing Agent Activity: ${repo?.full_name || `Repo #${repoId}`}`}
+          />
+        )}
+
+        {/* TAB 3: Security Posture & Heuristic Risk Breakdown */}
+        {activeTab === 'posture' && (
+          <>
+            {/* Repo Telemetry Posture Grid */}
+            <div className="posture-grid">
+              {/* Compliance Card */}
+              <div className="card posture-card">
+                <div className="card-header-clean">
+                  <div className="card-title-group">
+                    <ShieldIcon size={16} className="text-success" />
+                    <h3 className="card-title">Compliance Index</h3>
+                  </div>
+                  <span className="badge badge-success">OWASP &amp; ASVS</span>
+                </div>
+                <div className="posture-score-display">
+                  <span className="posture-score-number text-success font-bold">
+                    {complianceScore != null ? `${complianceScore}%` : '—'}
+                  </span>
+                  <p className="posture-score-desc">
+                    {complianceScore != null
+                      ? 'Measured against OWASP Top 10 and ASVS security control verification.'
+                      : 'No compliance index recorded yet. Run a scan to compute security metrics.'}
+                  </p>
+                </div>
+                <div className="meter-track">
+                  <div
+                    className="meter-fill fill-compliance"
+                    style={{ width: `${complianceScore != null ? complianceScore : 0}%` }}
+                  />
+                </div>
+              </div>
+
+              {/* Heuristic Risk Score Card */}
+              <div className="card posture-card">
+                <div className="card-header-clean">
+                  <div className="card-title-group">
+                    <AlertTriangleIcon size={16} className="text-warning" />
+                    <h3 className="card-title">Heuristic Risk Score</h3>
+                  </div>
+                  <span className="badge badge-neutral">Signal-weighted</span>
+                </div>
+                <div className="posture-score-display">
+                  <span
+                    className={`posture-score-number font-bold ${
+                      riskScore != null
+                        ? riskScore > 40
+                          ? 'text-danger'
+                          : riskScore > 20
+                          ? 'text-warning'
+                          : 'text-success'
+                        : 'text-muted'
+                    }`}
+                  >
+                    {riskScore != null ? `${riskScore}/100` : '—'}
+                  </span>
+                  <p className="posture-score-desc">
+                    {riskScore != null
+                      ? 'Derived from Git history depth, credential severity, and environment hygiene.'
+                      : 'Heuristic risk score pending repository security scan.'}
+                  </p>
+                </div>
+                <div className="meter-track">
+                  <div
+                    className="meter-fill"
+                    style={{
+                      width: `${riskScore != null ? Math.min(riskScore, 100) : 0}%`,
+                      backgroundColor:
+                        riskScore != null
+                          ? riskScore > 40
+                            ? 'var(--color-danger)'
+                            : riskScore > 20
+                            ? 'var(--color-warning)'
+                            : 'var(--color-success)'
+                          : 'var(--border-color)'
+                    }}
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Heuristic Risk Factors Breakdown */}
+            <div className="card mb-4">
+              <div className="card-header">
+                <h3 className="card-title">Heuristic Risk Factor Breakdown</h3>
+                <p className="card-subtitle">Transparent signal weights and score deductions for this repository.</p>
+              </div>
+              <div className="card-body">
+                <RiskFactorBreakdown factors={riskFactors} totalScore={riskScore} />
+              </div>
+            </div>
+          </>
         )}
       </div>
     </div>
