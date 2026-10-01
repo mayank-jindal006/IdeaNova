@@ -100,9 +100,9 @@ def _handle_new_findings(db, repo_id: int, new_finding_ids: list[int]) -> None:
         agent.handle_new_findings(db, repo_id, new_finding_ids)
         db.commit()
     except (ImportError, AttributeError) as exc:
-        record_agent_run(db, repo_id, "error", f"Agent handler unavailable: {exc}")
+        record_agent_run(db, repo_id, step="error", status="failed", detail=f"Agent handler unavailable: {exc}")
         db.commit()
     except Exception as exc:
         logger.exception("Agent failed while handling new findings for repo %s", repo_id)
-        record_agent_run(db, repo_id, "error", f"Agent handler failed: {exc}")
+        record_agent_run(db, repo_id, step="error", status="failed", detail=f"Agent handler failed: {exc}")
         db.commit()

@@ -60,17 +60,21 @@ def create_branch(full_name: str, branch_name: str, base_branch: str) -> None:
 
 def commit_changes(full_name: str, branch_name: str, edits: list[dict], message: str) -> None:
     repository = _github().get_repo(full_name)
+    commit_sha = None
     for edit in edits:
         path = edit["file_path"]
         content = edit["new_content"]
         try:
             current = repository.get_contents(path, ref=branch_name)
-            repository.update_file(path, message, content, current.sha, branch=branch_name)
+            result = repository.update_file(path, message, content, current.sha, branch=branch_name)
+            commit_sha = result.get("commit", {}).get("sha") if isinstance(result, dict) else getattr(result.commit, "sha", None)
         except Exception as exc:
             if getattr(exc, "status", None) == 404:
-                repository.create_file(path, message, content, branch=branch_name)
+                result = repository.create_file(path, message, content, branch=branch_name)
+                commit_sha = result.get("commit", {}).get("sha") if isinstance(result, dict) else getattr(result.commit, "sha", None)
             else:
                 raise
+    return commit_sha
 
 
 def create_pull_request(full_name: str, branch_name: str, base_branch: str, title: str, body: str) -> tuple[str, int]:
@@ -80,7 +84,7 @@ def create_pull_request(full_name: str, branch_name: str, base_branch: str, titl
 
 def push_fix_commit(full_name, branch, edits, message):
     """Push a follow-up set of full-file edits to an existing fix branch."""
-    commit_changes(full_name, branch, edits, message)
+    return commit_changes(full_name, branch, edits, message)
 
 
 def get_branch_files(full_name, branch, paths):
@@ -139,11 +143,13 @@ def open_fix_pr(db, fix_id):
     except Exception as exc:
         if getattr(exc, "status", None) != 422:
             raise
-    push_fix_commit(repo.full_name, branch, fix.edits, f"RepoGuard: fix {finding.title}")
+    fix.head_sha = push_fix_commit(repo.full_name, branch, fix.edits, f"RepoGuard: fix {finding.title}")
     url, number = create_pull_request(repo.full_name, branch, repo.default_branch, f"RepoGuard: {finding.title}", _fix_pr_body(finding, fix))
     fix.branch, fix.pr_url, fix.pr_number = branch, url, number
     fix.status, finding.status = FixStatus.pr_opened, FindingStatus.pr_opened
-    return {"pr_url": url, "pr_number": number}
+    db.commit()
+    db.refresh(fix)
+    return fix
 
 
 def _fix_pr_body(finding, fix) -> str:
