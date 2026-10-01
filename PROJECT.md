@@ -34,8 +34,9 @@ Every feature, schema, algorithm, and UI component in RepoGuard is backed by ver
 
 | Commit | Author | Date | Branch / PR | Key Deliverables & Code Changes |
 |---|---|---|---|---|
-| `ff31997` | Mayank | 2026-10-01 | `design1` | Initial comprehensive `PROJECT.md` documentation guide. |
-| `a15295e` | Yash | 2026-10-01 | `design1` | AI integrations, finding column metadata, Alembic migration `0002_add_finding_columns.py`, OSV CVE detail enrichment. |
+| `1265350` | Saina Sharma | 2026-10-01 | PR #3 (Merged) | Merge multi-secret redaction and `try_repo.py` end-to-end scanner into `design1`. |
+| `f077077` | Saina Sharma | 2026-10-01 | `Saina` | Handle multiple/repeated secrets per file (`extract_secret`, `hide_other_secrets`, `restore_other_secrets`), test repo validation, and `try_repo.py`. |
+| `a15295e` | Yash | 2026-10-01 | `design1` | AI integrations, finding column metadata, Alembic migration `0002_add_finding_columns.py`, OSV CVE detail enrichment (`/v1/vulns/{id}`). |
 | `bedb94e` | Saina Sharma | 2026-09-30 | PR #2 (Merged) | Merge AI Remediation Engine into `design1`: Groq LLM client, Gemini fallback, prompt templates, fix generation, safe redaction, tiers, and validation tests. |
 | `fc80f99` | Mayank | 2026-09-30 | `design1` | Frontend remediation: removed silent mock fallbacks, added offline sample banners, enforced strict `fix_id` parameter passing for `/fixes/{id}/open-pr`. |
 | `fde3e54` | Mayank | 2026-09-30 | `design1` | Updated `fixes.json` with `auto_branch` tier and validation records for AWS, Stripe, and GitHub credentials. |
@@ -94,7 +95,7 @@ Every feature, schema, algorithm, and UI component in RepoGuard is backed by ver
 | **Backend** | Python 3.14, FastAPI, SQLAlchemy 2.0, Pydantic v2 | Asynchronous REST API, background task runner, GitHub API client, Alembic migrations. |
 | **Database** | PostgreSQL 16 (Docker) | Relational storage for repos, scans, findings, fixes, scores, and feedback. |
 | **Scanners** | Gitleaks 8.30.x, OSV.dev Batch API | High-entropy regex secret scanning and open-source dependency CVE analysis. |
-| **AI / LLM** | Groq (`openai/gpt-oss-120b`), Gemini (`gemini-3.6-flash`) | Context-aware code remediation, explanation synthesis, and review tier classification. |
+| **AI / LLM** | Groq (`openai/gpt-oss-120b`), Gemini (`gemini-3.6-flash`) | Context-aware code remediation, explanation synthesis, multi-secret preservation, and review tier classification. |
 | **Contracts** | `docs/CONTRACTS.md` (v1.1) | Single source of truth for all database schemas, API shapes, and snake_case models. |
 
 ---
@@ -158,16 +159,17 @@ Every feature, schema, algorithm, and UI component in RepoGuard is backed by ver
 
 ### 3. Saina (AI Remediation & LLM Engineering Lead)
 *Branches:* `Saina`, `contracts`  
-*Commits:* 14 commits (`a695010`, `50af6fc`, `bf4cfde`, `a9ab0f8`, `6157a74`, `0a274ac`, `34cfcd6`, `d87e7bc`, `1e2576e`, `04a0f82`, `6817b61`, `5fb45a9`, `3347b7f`, `bedb94e`)  
-*Focus:* LLM Prompting, Safe Code Redaction, Fix Generation, Review Tiers, and Automated Validation.
+*Commits:* 15 commits (`a695010`, `50af6fc`, `bf4cfde`, `a9ab0f8`, `6157a74`, `0a274ac`, `34cfcd6`, `d87e7bc`, `1e2576e`, `04a0f82`, `6817b61`, `5fb45a9`, `3347b7f`, `bedb94e`, `f077077`, `1265350`)  
+*Focus:* LLM Prompting, Safe Code Redaction, Multi-Secret Preservation, Fix Generation, Review Tiers, and Automated Validation.
 
 **Key Deliverables & Completed Work:**
 - **Inference Engine (`backend/app/ai/llm.py`):**
   - Multi-provider structured JSON completion engine: Groq `openai/gpt-oss-120b` (primary) with automatic fallback to Gemini `gemini-3.6-flash`.
   - Configurable timeout, exponential backoff retries, and markdown code fence stripping.
 - **Zero-Raw-Secret Code Redaction (`backend/app/ai/redact.py`):**
-  - Replaces sensitive key literals with `<<REDACTED_SECRET>>` using 1-based `start_column` and `end_column` before prompting external LLMs.
-  - Built-in safety check: refuses to redact and reverts to `flag_only` if the text substring does not match the masked secret's first 4 and last 4 characters.
+  - `extract_secret`: Extracts exact secret text using 1-based columns and performs verification checks against `secret_masked`.
+  - `redact`: Replaces every occurrence of the exposed secret with `<<REDACTED_SECRET>>` across the file.
+  - `hide_other_secrets` & `restore_other_secrets` (PR #3): When a file contains multiple or repeated secrets (e.g., both DB credentials or multiple API tokens), secondary secrets are safely masked with `<<OTHER_SECRET_{n}>>` so the LLM leaves them untouched, and they are automatically restored post-generation.
 - **Automated Fix Generation (`backend/app/ai/fix.py`):**
   - Structured prompt engineering (`prompts.py`) generating full-file replacements for affected code, `.env.example`, and `.gitignore`.
   - Synthesizes educational explanations (`what`, `why_dangerous`, `how_fixed`, `rotation_note`).
@@ -179,7 +181,8 @@ Every feature, schema, algorithm, and UI component in RepoGuard is backed by ver
   - `auto_branch`: Validation passed, confidence >= 0.85, and change is <= 2 lines (`AUTO_MAX_CHANGED_LINES`).
   - `pr_review`: Changes modifying application logic or environment configs requiring peer review.
   - `flag_only`: Architectural exposures or unvalidated patches (generates explanation and rotation checklist only).
-- **AI Test Suite (`backend/tests/ai/`):** 61 unit tests (`test_fix.py`, `test_llm.py`, `test_prompts.py`, `test_redact.py`, `test_tiers.py`, `test_validate.py`) passing with 100% success rate on all runnable units.
+- **End-to-End Test Repo Runner (`backend/scripts/try_repo.py`):** Standalone end-to-end testing script that clones a public GitHub repo, scans secrets via Gitleaks, feeds findings through the live LLM fix engine, validates results, and outputs a formatted summary.
+- **AI Test Suite (`backend/tests/ai/`):** 68 unit tests (`test_fix.py`, `test_llm.py`, `test_prompts.py`, `test_redact.py`, `test_tiers.py`, `test_validate.py`) passing with 61 passed and 7 skipped (isolated external CLIs).
 
 ---
 
@@ -204,7 +207,7 @@ Every feature, schema, algorithm, and UI component in RepoGuard is backed by ver
   - Replaced ambiguous "predictive AI" claims with a transparent, explainable heuristic risk score based on measurable Git signals:
     $$\text{Risk Score} = 0.35 \times S_{\text{history}} + 0.25 \times E_{\text{tracked}} + 0.15 \times V_{\text{velocity}} + 0.15 \times G_{\text{gitignore}} + 0.10 \times C_{\text{churn}}$$
 - **Rotation Guides (`backend/app/compliance/rotation.py`):** Formulated provider-specific operational checklists to guide engineers through IAM invalidation, key rolling, and audit log inspection.
-- **Evaluation Fixtures (`fixtures/`):** Created realistic repository samples, fake credential fixtures, and JSON schemas for integration testing (`findings_sample.json`, `repo_sample.json`, `dashboard_sample.json`, sample code files).
+- **Evaluation Fixtures & Test Repositories:** Created realistic repository samples, fake credential fixtures, and JSON schemas for integration testing (`findings_sample.json`, `repo_sample.json`, `dashboard_sample.json`, and sample test repo `https://github.com/gargrishika2005-cell/repoguard-test-python`).
 
 ---
 
@@ -214,6 +217,7 @@ Every feature, schema, algorithm, and UI component in RepoGuard is backed by ver
 |---|---|
 | **Zero-Raw-Secret Policy** | Raw secrets are never stored in PostgreSQL, never returned in API responses, never shown in UI, and never sent to external LLM providers. Only `secret_masked` and SHA-256 hashes are persisted. |
 | **Strict Zero-Auto-Merge** | Pull requests are created on dedicated branches (`repoguard/fix-{id}`) for human peer review. Nothing is ever auto-merged into default branches. |
+| **Multi-Secret Isolation** | Secondary secrets in the same file are preserved via `hide_other_secrets` and restored post-generation so remediation focuses exclusively on the target finding. |
 | **Rotation-Aware Remediations** | Every secret fix enforces `rotation_required: true` and includes provider-specific rotation guidance because code patching does not purge exposed keys from past commits. |
 | **Ephemeral Disk Isolation** | Scans execute in isolated temporary clones that are purged immediately after execution (`shutil.rmtree`). |
 | **Contract Consistency** | All models and endpoints adhere strictly to `snake_case` naming defined in [`CONTRACTS.md`](file:///c:/proj/ideanova/docs/CONTRACTS.md). |
@@ -282,10 +286,13 @@ npm.cmd run dev
 ```
 *Frontend will run on:* `http://localhost:5173`
 
-### 3. Running Automated Tests
+### 3. Running Automated Tests & Quality Checks
 ```powershell
-# Run AI unit test suite (61 tests)
+# Run AI unit test suite (68 tests)
 pytest backend/tests/ai
+
+# Run live test repo scan and fix pipeline (requires GROQ_API_KEY in .env)
+python -m scripts.try_repo https://github.com/gargrishika2005-cell/repoguard-test-python
 
 # Run frontend linter (92 rules)
 npx.cmd oxlint
@@ -300,7 +307,8 @@ npm.cmd run build
 
 - [x] **Linting:** `oxlint` passes with **0 warnings, 0 errors** across 23 files and 92 rules.
 - [x] **Production Build:** `vite build` bundles cleanly into `dist/` in 284ms.
-- [x] **AI Engine Tests:** `pytest backend/tests/ai` passes (57 passed, 4 skipped for missing external CLIs).
+- [x] **AI Engine Tests:** `pytest backend/tests/ai` passes (61 passed, 7 skipped for missing external CLIs).
+- [x] **Multi-Secret Preservation:** `hide_other_secrets` and `restore_other_secrets` verified across multi-finding source files.
 - [x] **Contracts Compatibility:** Adheres to all Pydantic schemas in `CONTRACTS.md`.
 - [x] **Branch Hygiene:** `design1` is the active, unified default branch tracking `origin/design1`. Redundant `main` branch deleted.
 - [x] **Zero Mock Fallbacks:** Real API errors and genuine scan metrics are rendered without silent fake score injections.
