@@ -85,6 +85,7 @@ class AgentRunOut(BaseModel):
     fix_id: int | None
     attempt: int
     step: Literal["detected", "fix_generated", "skipped", "pr_opened", "ci_pending", "ci_passed", "ci_failed", "repaired", "repair_failed", "gave_up", "error"]
+    status: str
     detail: str | None
     created_at: datetime
 

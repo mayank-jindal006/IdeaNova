@@ -107,7 +107,7 @@ def get_finding(finding_id: int, db: Session = Depends(get_db)):
     finding = _finding_or_404(finding_id, db)
     data = FindingOut.model_validate(finding).model_dump(mode="json")
     fix = db.scalar(select(Fix).where(Fix.finding_id == finding.id).order_by(Fix.created_at.desc()))
-    data["latest_fix"] = None if not fix else {"id": fix.id, "finding_id": fix.finding_id, "explanation": fix.explanation, "edits": fix.edits, "tier": fix.tier.value, "validation": fix.validation, "pr_url": fix.pr_url, "pr_number": fix.pr_number, "status": fix.status.value, "branch": fix.branch, "ci_status": fix.ci_status.value, "repair_attempts": fix.repair_attempts, "head_sha": fix.head_sha}
+    data["latest_fix"] = None if not fix else {"id": fix.id, "finding_id": fix.finding_id, "explanation": fix.explanation, "edits": fix.edits, "tier": fix.tier.value, "validation": fix.validation, "pr_url": fix.pr_url, "pr_number": fix.pr_number, "status": fix.status.value, "branch": fix.branch, "ci_status": getattr(fix.ci_status, "value", fix.ci_status), "repair_attempts": fix.repair_attempts, "head_sha": fix.head_sha}
     data["rotation_checklist"] = _rotation_checklist(finding)
     return data
 
@@ -172,7 +172,7 @@ def open_pr(fix_id: int, db: Session = Depends(get_db)):
     try:
         result = open_fix_pr(db, fix_id)
         db.commit()
-        return result
+        return {"pr_url": result.pr_url, "pr_number": result.pr_number}
     except ValueError as exc:
         if str(exc) == "FIX_NOT_FOUND":
             raise APIError(404, "FIX_NOT_FOUND", "Fix was not found") from exc
@@ -283,9 +283,13 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks, db
             fix = db.scalar(select(Fix).where(Fix.branch == branch))
             if fix:
                 conclusion = workflow_run.get("conclusion") or "failure"
+                workflow_sha = workflow_run.get("head_sha")
+                if not workflow_sha or workflow_sha != fix.head_sha:
+                    return {"ok": True}
                 fix.ci_status = CIStatus.passed if conclusion == "success" else CIStatus.failed
-                fix.head_sha = workflow_run.get("head_sha") or fix.head_sha
-                record_agent_run(db, fix.finding.repo_id, "ci_passed" if conclusion == "success" else "ci_failed", f"GitHub Actions conclusion: {conclusion}", finding_id=fix.finding_id, fix_id=fix.id, attempt=fix.repair_attempts)
+                record_agent_run(db, fix.finding.repo_id, finding_id=fix.finding_id, fix_id=fix.id,
+                                 step="ci_passed" if conclusion == "success" else "ci_failed",
+                                 status=conclusion, detail=f"GitHub Actions conclusion: {conclusion}")
                 db.commit()
                 background_tasks.add_task(_handle_ci_result, fix.id, conclusion, workflow_run.get("id"), fix.finding.repo.full_name)
     return {"ok": True}
@@ -326,9 +330,11 @@ def _handle_ci_result(fix_id: int, conclusion: str, run_id: int | None, full_nam
             from app import agent
             agent.handle_ci_result(db, fix_id, conclusion, log_text)
         except (ImportError, AttributeError) as exc:
-            record_agent_run(db, fix.finding.repo_id, "error", f"Agent CI handler unavailable: {exc}", finding_id=fix.finding_id, fix_id=fix.id, attempt=fix.repair_attempts)
+            record_agent_run(db, fix.finding.repo_id, finding_id=fix.finding_id, fix_id=fix.id,
+                             step="error", status="failed", detail=f"Agent CI handler unavailable: {exc}")
         except Exception as exc:
-            record_agent_run(db, fix.finding.repo_id, "error", f"Agent CI handler failed: {exc}", finding_id=fix.finding_id, fix_id=fix.id, attempt=fix.repair_attempts)
+            record_agent_run(db, fix.finding.repo_id, finding_id=fix.finding_id, fix_id=fix.id,
+                             step="error", status="failed", detail=f"Agent CI handler failed: {exc}")
         db.commit()
     finally:
         db.close()
