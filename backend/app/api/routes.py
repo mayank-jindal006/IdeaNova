@@ -327,7 +327,7 @@ def _handle_ci_result(fix_id: int, conclusion: str, run_id: int | None, full_nam
             except Exception as exc:
                 log_text = f"Could not download failed Actions log: {exc}"
         try:
-            from app import agent
+            from app.ai import agent
             agent.handle_ci_result(db, fix_id, conclusion, log_text)
         except (ImportError, AttributeError) as exc:
             record_agent_run(db, fix.finding.repo_id, finding_id=fix.finding_id, fix_id=fix.id,

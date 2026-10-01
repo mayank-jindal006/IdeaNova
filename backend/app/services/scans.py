@@ -96,7 +96,7 @@ def run_scan(scan_id: int) -> None:
 def _handle_new_findings(db, repo_id: int, new_finding_ids: list[int]) -> None:
     """Delegate to Saina's optional agent module without owning its business logic."""
     try:
-        from app import agent
+        from app.ai import agent
         agent.handle_new_findings(db, repo_id, new_finding_ids)
         db.commit()
     except (ImportError, AttributeError) as exc:
