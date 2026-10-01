@@ -53,3 +53,12 @@ def get_rotation_checklist(finding: dict):
         "steps": list(data["steps"]),
         "note": "Fixing the code does not remove the secret from git history. Rotate this credential.",
     }
+
+def rotation_checklist(rule_id_or_finding) -> list[str]:
+    """Called by the backend (routes.py). Returns just the steps."""
+    if isinstance(rule_id_or_finding, dict):
+        finding = rule_id_or_finding
+    else:
+        finding = {"type": "secret", "rule_id": rule_id_or_finding}
+    result = get_rotation_checklist(finding)
+    return result["steps"] if result else []
