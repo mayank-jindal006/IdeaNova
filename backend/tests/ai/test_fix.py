@@ -2,6 +2,9 @@
 import json
 from pathlib import Path
 
+import os
+import shutil
+
 import pytest
 
 from app.ai import fix
@@ -35,7 +38,7 @@ def fake_llm(monkeypatch):
     """
     calls = []
 
-    def install(reply=None, error=None, results=None):
+    def install(reply=None, error=None, results=None, real_gitleaks=False):
         replies = list(reply) if isinstance(reply, list) else None
         checks = list(results) if results else None
 
@@ -45,11 +48,13 @@ def fake_llm(monkeypatch):
                 raise error
             return replies.pop(0) if replies is not None else reply
 
-        def fake_validate(edits, main_file):
+        def fake_validate(edits, main_file, secret=None):
             return checks.pop(0) if checks else PASS
 
         monkeypatch.setattr(fix, "complete_json", fake)
         monkeypatch.setattr(fix, "validate_fix", fake_validate)
+        if not real_gitleaks:
+            monkeypatch.setattr(fix, "find_secrets", lambda path, content: [])
         return calls
     return install
 
@@ -184,3 +189,36 @@ def test_secret_in_test_file_is_flag_only_and_llm_not_called(fake_llm):
     assert result["tier"] == "flag_only"
     assert result["edits"] == []
     assert calls == []
+
+def test_repeated_secret_is_never_sent_to_the_llm(fake_llm):
+    content = ('import os\n'
+               'DB_PASSWORD = "xK9mQ2wLp7ZtR5vNc8Yd"\n'
+               'DATABASE_URL = "postgresql://appuser:xK9mQ2wLp7ZtR5vNc8Yd@db.example.io:5432/appdb"\n')
+    finding = dict(AWS, rule_id="generic-api-key", file_path="db.py", line=2,
+                   start_column=16, end_column=35, secret_masked="xK9m****c8Yd")
+    calls = fake_llm(GOOD_REPLY)
+    fix.generate_fix(finding, content, ["db.py"])
+    assert calls and all("xK9mQ2wLp7ZtR5vNc8Yd" not in c for c in calls)
+
+
+
+@pytest.mark.skipif(shutil.which(os.getenv("GITLEAKS_BIN", "gitleaks")) is None, reason="gitleaks not installed")
+def test_other_secret_in_same_file_is_hidden_and_restored(fake_llm):
+    gh = "ghp_JBd0Kh8oOOL8dKLzdocJ2isAjIhKtJ0RlgLK"
+    content = CONTENT.replace('BUCKET_NAME = "orders-invoices"', f'GITHUB_TOKEN = "{gh}"')
+    reply_content = content.replace(f'"{REAL_SECRET}"', 'os.getenv("AWS_ACCESS_KEY_ID")').replace(gh, "<<OTHER_SECRET_1>>")
+    calls = fake_llm(dict(GOOD_REPLY, new_content=reply_content), real_gitleaks=True)
+    result = fix.generate_fix(AWS, content, ["config.py"])
+    assert calls and all(gh not in c and REAL_SECRET not in c for c in calls)   # neither secret sent
+    assert "<<OTHER_SECRET_1>>" in calls[0]
+    assert gh in result["edits"][0]["new_content"]                               # other secret put back
+    assert "<<OTHER_SECRET" not in result["edits"][0]["new_content"]
+
+
+def test_ai_removing_other_placeholder_is_rejected(fake_llm, monkeypatch):
+    fake_llm(GOOD_REPLY)
+    monkeypatch.setattr(fix, "find_secrets", lambda path, content: ["orders-invoices-secret-value"])
+    content = CONTENT.replace('"orders-invoices"', '"orders-invoices-secret-value"')
+    result = fix.generate_fix(AWS, content, ["config.py"])          # GOOD_REPLY drops the placeholder
+    assert result["tier"] == "flag_only"
+    assert any("OTHER_SECRET_1" in n for n in result["validation"]["notes"])
