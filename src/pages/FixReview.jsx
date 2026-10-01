@@ -224,7 +224,7 @@ export const FixReview = () => {
             {/* CI Status Badge if Fix Exists */}
             {currentFix && (
               <CIStatusBadge
-                status={currentFix.ci_status || (isPrOpened ? 'passed' : 'none')}
+                status={currentFix.ci_status || 'none'}
                 repairAttempts={currentFix.repair_attempts || 0}
               />
             )}
@@ -300,7 +300,7 @@ export const FixReview = () => {
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
                 <span className="text-secondary">CI Check:</span>
                 <CIStatusBadge
-                  status={currentFix?.ci_status || 'passed'}
+                  status={currentFix?.ci_status || 'none'}
                   repairAttempts={currentFix?.repair_attempts || 0}
                   size="sm"
                 />
