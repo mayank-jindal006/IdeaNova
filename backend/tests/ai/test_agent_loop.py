@@ -259,3 +259,66 @@ def test_secret_in_ci_log_never_reaches_agent_runs(world, open_fix, monkeypatch)
     assert all("sk_live" not in detail for _, detail in world.runs)
     push = next(args for name, args in world.gh_calls if name == "push_fix_commit")
     assert "sk_live" not in push[3]                          # commit message too
+
+# ---------- integration: real models + real record_agent_run on SQLite ----------
+
+@pytest.fixture
+def real_db(monkeypatch):
+    sqlalchemy = pytest.importorskip("sqlalchemy")
+    from sqlalchemy.orm import sessionmaker
+    from app.db.base import Base
+    if not hasattr(models, "AgentRun"):
+        pytest.skip("agent tables not in models yet")
+    engine = sqlalchemy.create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    repo = models.Repo(full_name="team/test-repo", default_branch="main", auto_fix_enabled=True)
+    db.add(repo)
+    db.flush()
+    scan = models.Scan(repo_id=repo.id, trigger=models.ScanTrigger.push, status=models.ScanStatus.done)
+    db.add(scan)
+    db.flush()
+    finding = models.Finding(scan_id=scan.id, repo_id=repo.id, fingerprint="f1", type=models.FindingType.secret,
+                             rule_id="aws-access-token", title="AWS key", severity=models.Severity.critical,
+                             file_path="config.py", line=1, start_column=8, end_column=27,
+                             secret_masked="AKIA****2EPF", confidence=0.9)
+    db.add(finding)
+    db.commit()
+    monkeypatch.setattr(agent, "_read_repo", lambda clone, path: ("KEY = 'x'\n", ["config.py"], {}))
+    monkeypatch.setattr(agent, "find_secrets", lambda path, content: [])
+    yield db, repo, finding
+    db.close()
+
+
+def _real_gh(gh_calls):
+    def open_fix_pr(db, fix_id):   # Yash's real one returns a dict and sets branch
+        fix = db.get(models.Fix, fix_id)
+        fix.branch, fix.pr_url, fix.pr_number = f"repoguard/fix-{fix.finding_id}", "https://pr/7", 7
+        return {"pr_url": "https://pr/7", "pr_number": 7}
+    return SimpleNamespace(
+        clone_repo=lambda name: "/fake", cleanup_clone=lambda path: None, open_fix_pr=open_fix_pr,
+        get_branch_files=lambda name, branch, paths: {p: "KEY = os.getenv('K')\n" for p in paths},
+        push_fix_commit=lambda *a: gh_calls.append(("push", a)),     # returns None, like Yash's
+        comment_on_pr=lambda *a: gh_calls.append(("comment", a)))
+
+
+def test_full_loop_on_real_models(real_db, monkeypatch):
+    db, repo, finding = real_db
+    gh_calls = []
+    monkeypatch.setattr(agent, "_github", lambda: _real_gh(gh_calls))
+    monkeypatch.setattr(fix_module, "generate_fix", fake_fix())
+    monkeypatch.setattr(agent, "repair_fix", lambda *a: REPAIRED)
+
+    agent.handle_new_findings(db, repo.id, [finding.id])
+    fix = db.query(models.Fix).one()
+    assert fix.branch == f"repoguard/fix-{finding.id}" and fix.ci_status == models.CIStatus.pending
+
+    agent.handle_ci_result(db, fix.id, "failure", LOG)
+    agent.handle_ci_result(db, fix.id, "success", "")
+    db.expire_all()
+    fix = db.get(models.Fix, fix.id)
+    assert fix.ci_status == models.CIStatus.passed and fix.repair_attempts == 1
+    runs = [r.step.value for r in db.query(models.AgentRun).order_by(models.AgentRun.id)]
+    assert runs == ["detected", "fix_generated", "pr_opened", "ci_pending", "ci_failed", "repaired", "ci_passed"]
+    assert db.query(models.AgentRun).filter_by(step=models.AgentStep.pr_opened).one().detail == "https://pr/7"
+    assert [name for name, _ in gh_calls] == ["push", "comment"]

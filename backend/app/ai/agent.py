@@ -275,6 +275,7 @@ def _log(db, repo_id: int, step: str, detail: str, finding_id: int | None = None
                     step, repo_id, finding_id, fix_id, attempt, detail)
         return
     record_agent_run(db, repo_id, step, detail, finding_id=finding_id, fix_id=fix_id, attempt=attempt)
+    db.commit()   # record_agent_run only adds the row; commit so a later rollback can't lose it
 
 
 def _models():
@@ -285,6 +286,12 @@ def _models():
 def _finding_dict(finding) -> dict:
     from app.schemas import FindingOut
     return FindingOut.model_validate(finding).model_dump(mode="json")
+
+
+def _ci(status: str):
+    """CIStatus enum member if the model has it, else the plain string (tests / older models)."""
+    enum = getattr(_models(), "CIStatus", None)
+    return enum(status) if enum else status
 
 
 def _value(x):
@@ -384,8 +391,9 @@ def _fix_one(db, gh, repo, finding, clone_path: str) -> None:
             _log(db, repo.id, "skipped", f"no PR opened: {reason}", finding_id=finding.id, fix_id=fix.id)
             return
 
-        pr_url, _number = gh.open_fix_pr(db, fix.id)   # creates repoguard/fix-<finding_id>, sets branch/head_sha
-        fix.ci_status = "pending"
+        opened = gh.open_fix_pr(db, fix.id)   # creates repoguard/fix-<finding_id>, sets branch
+        pr_url = opened["pr_url"] if isinstance(opened, dict) else opened[0]
+        fix.ci_status = _ci("pending")
         db.commit()
         _log(db, repo.id, "pr_opened", pr_url, finding_id=finding.id, fix_id=fix.id)
         _log(db, repo.id, "ci_pending", "waiting for the repository's CI", finding_id=finding.id, fix_id=fix.id)
@@ -395,7 +403,7 @@ def _fix_one(db, gh, repo, finding, clone_path: str) -> None:
 
 
 def _give_up(db, gh, fix, finding, full_name: str, why: str) -> None:
-    fix.ci_status = "failed"
+    fix.ci_status = _ci("failed")
     db.commit()
     _log(db, finding.repo_id, "gave_up", why, finding_id=finding.id, fix_id=fix.id, attempt=fix.repair_attempts)
     if fix.pr_number:
@@ -424,7 +432,7 @@ def handle_ci_result(db, fix_id: int, conclusion: str, log_text: str) -> None:
     attempt = fix.repair_attempts or 0
 
     if conclusion == "success":
-        fix.ci_status = "passed"
+        fix.ci_status = _ci("passed")
         db.commit()
         _log(db, repo.id, "ci_passed", "CI passed; ready for a human to review and merge",
              finding_id=finding.id, fix_id=fix.id, attempt=attempt)
@@ -435,7 +443,7 @@ def handle_ci_result(db, fix_id: int, conclusion: str, log_text: str) -> None:
         return
 
     errors = extract_ci_errors(log_text)
-    fix.ci_status = "failed"
+    fix.ci_status = _ci("failed")
     db.commit()
     _log(db, repo.id, "ci_failed", f"CI failed: {_error_summary(errors)}",
          finding_id=finding.id, fix_id=fix.id, attempt=attempt)
@@ -451,7 +459,8 @@ def handle_ci_result(db, fix_id: int, conclusion: str, log_text: str) -> None:
         return
 
     try:
-        files = gh.get_branch_files(repo.full_name, fix.branch, [finding.file_path])
+        files = {path: text for path, text in
+                 gh.get_branch_files(repo.full_name, fix.branch, [finding.file_path]).items() if text is not None}
         repaired = repair_fix(_finding_dict(finding), files, errors, list(files))
         if repaired["tier"] == "flag_only" or not repaired["edits"]:
             reason = (repaired["validation"]["notes"] or ["repair not possible"])[-1]
@@ -463,8 +472,9 @@ def handle_ci_result(db, fix_id: int, conclusion: str, log_text: str) -> None:
         sha = gh.push_fix_commit(repo.full_name, fix.branch, repaired["edits"],
                                  f"RepoGuard: repair fix after CI failure ({_error_summary(errors)})")
         fix.repair_attempts = attempt + 1
-        fix.head_sha = sha
-        fix.ci_status = "pending"
+        if sha:
+            fix.head_sha = sha
+        fix.ci_status = _ci("pending")
         # keep fix.edits = full change vs the default branch, so the dashboard diff stays right
         fix.edits = [dict(e, new_content=edit["new_content"]) if e["file_path"] == edit["file_path"] else e
                      for e in fix.edits]
