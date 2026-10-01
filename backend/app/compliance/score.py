@@ -1,7 +1,7 @@
-PENALTY = PENALTY = {"critical": 15, "high": 8, "medium": 4, "low": 2}
+PENALTY = {"critical": 15, "high": 8, "medium": 4, "low": 2}
 
 SECRET_CONTROLS = (["A07:2021"], ["V6.4.1"])   # TODO: verify against official docs
-DEP_CONTROLS = (["A06:2021"], ["V14.2.1"])     # TODO: verify against official docs
+DEP_CONTROLS = (["A06:2021"], ["V14.2.1"])     
 
 CONTROLS = {
     "A07:2021": "Identification and Authentication Failures",
