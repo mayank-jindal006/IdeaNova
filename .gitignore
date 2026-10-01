@@ -26,7 +26,6 @@ __pycache__/
 *.njsproj
 *.sln
 *.sw?
-
 # Python / secrets
 .env
 __pycache__/
@@ -38,4 +37,4 @@ venv/
 *.pptx
 *.ppt
 AI-Secure-DevOps-Copilot*.md
-/requirements.txt
+/requirements.txt
