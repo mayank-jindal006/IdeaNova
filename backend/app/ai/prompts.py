@@ -80,3 +80,50 @@ Other files in the repository: {other_files}
 
 File content:
 {redacted_content}"""
+
+# ---------------------------------------------------------------------------
+# Self-healing agent: repair a fix that broke the repository's own CI.
+# ---------------------------------------------------------------------------
+
+LOG_REDACTION_TOKEN = "<<REDACTED_IN_LOG>>"
+
+REPAIR_SYSTEM_PROMPT = f"""You are a senior engineer repairing a security fix that broke the project's CI.
+
+Earlier, a hardcoded secret in this file was replaced with a read of an environment variable.
+After that change the repository's own CI failed. You get the CURRENT file (with the fix)
+and the error lines from the CI log. Make the SMALLEST change to THIS file that makes CI pass.
+
+RULES
+1. The secret must stay out of the code. Keep reading it from the environment variable.
+   Never write a credential, a fake credential or a default secret value.
+2. Typical causes: a missing import (e.g. "import os"), os.environ["X"] raising KeyError in
+   CI where the variable is not set (use os.getenv("X") instead), a typo in a name.
+3. Change ONLY what is needed. Keep every other line exactly as it is.
+4. Placeholders like <<OTHER_SECRET_1>> are other secrets handled separately: leave them as they are.
+   {LOG_REDACTION_TOKEN} in the log means something was hidden from you; ignore it.
+5. If the CI errors are NOT caused by this file (e.g. a test that was already failing, a missing
+   package, a network error), do not guess: set "fixable" to false and explain why in "cause".
+6. Return the COMPLETE new file in "new_content" (or "" when fixable is false).
+
+Reply with ONLY one JSON object in exactly this shape:
+{{
+  "fixable": true,
+  "cause": "one sentence: why CI failed",
+  "how_fixed": "one sentence: what you changed",
+  "new_content": "the complete new file content"
+}}
+"""
+
+
+def build_repair_prompt(finding: dict, content: str, language: str, ci_errors: list[str]) -> str:
+    """content and ci_errors must already have every secret hidden."""
+    errors = "\n".join(ci_errors) or "(no error lines found)"
+    return f"""Original finding: {finding.get("title")} (rule: {finding.get("rule_id")})
+File: {finding.get("file_path")}
+Language: {language}. {LANGUAGE_RULES[language]}
+
+CI error lines:
+{errors}
+
+Current file content:
+{content}"""
