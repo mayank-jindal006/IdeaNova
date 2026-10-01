@@ -16,6 +16,7 @@ Safety rules (section 8.4) enforced here:
   * a repair only changes the affected file; it is always tier pr_review (a human merges)
   * a repair that adds a secret, breaks syntax or rewrites too much is rejected (flag_only)
 """
+import inspect
 import logging
 import re
 from pathlib import Path
@@ -252,6 +253,7 @@ def repair_fix(finding: dict, files: dict[str, str], ci_errors: list[str], repo_
 # ---------------------------------------------------------------------------
 
 logger = logging.getLogger("repoguard.agent")
+_FAILED_STEPS = {"ci_failed", "repair_failed", "gave_up", "error"}
 BRANCH_PREFIX = "repoguard/fix-"
 SUPPORT_FILES = (".gitignore", ".env.example")
 NEEDS_HUMAN = ("RepoGuard could not make CI pass on this fix automatically, so it stopped trying. "
@@ -274,7 +276,14 @@ def _log(db, repo_id: int, step: str, detail: str, finding_id: int | None = None
         logger.info("agent %s repo=%s finding=%s fix=%s attempt=%s: %s",
                     step, repo_id, finding_id, fix_id, attempt, detail)
         return
-    record_agent_run(db, repo_id, step, detail, finding_id=finding_id, fix_id=fix_id, attempt=attempt)
+    params = inspect.signature(record_agent_run).parameters
+    kwargs = {"step": step, "detail": detail, "finding_id": finding_id, "fix_id": fix_id}
+    if "attempt" in params:
+        kwargs["attempt"] = attempt
+    if "status" in params:
+        kwargs["status"] = "failed" if step in _FAILED_STEPS else "ok"
+    record_agent_run(db, repo_id, **kwargs)   # keywords only: works whatever the argument order is
+    db.commit()   # record_agent_run only adds the row; commit so a later rollback can't lose it
 
 
 def _models():
@@ -285,6 +294,11 @@ def _models():
 def _finding_dict(finding) -> dict:
     from app.schemas import FindingOut
     return FindingOut.model_validate(finding).model_dump(mode="json")
+
+
+def _ci(status: str) -> str:
+    """fixes.ci_status is stored as text: "none" | "pending" | "passed" | "failed"."""
+    return status
 
 
 def _value(x):
@@ -384,8 +398,14 @@ def _fix_one(db, gh, repo, finding, clone_path: str) -> None:
             _log(db, repo.id, "skipped", f"no PR opened: {reason}", finding_id=finding.id, fix_id=fix.id)
             return
 
-        pr_url, _number = gh.open_fix_pr(db, fix.id)   # creates repoguard/fix-<finding_id>, sets branch/head_sha
-        fix.ci_status = "pending"
+        opened = gh.open_fix_pr(db, fix.id)   # creates repoguard/fix-<finding_id>, sets branch
+        if isinstance(opened, dict):
+            pr_url = opened["pr_url"]
+        elif isinstance(opened, (tuple, list)):
+            pr_url = opened[0]
+        else:   # the Fix object itself
+            pr_url = getattr(opened, "pr_url", None) or fix.pr_url
+        fix.ci_status = _ci("pending")
         db.commit()
         _log(db, repo.id, "pr_opened", pr_url, finding_id=finding.id, fix_id=fix.id)
         _log(db, repo.id, "ci_pending", "waiting for the repository's CI", finding_id=finding.id, fix_id=fix.id)
@@ -395,7 +415,7 @@ def _fix_one(db, gh, repo, finding, clone_path: str) -> None:
 
 
 def _give_up(db, gh, fix, finding, full_name: str, why: str) -> None:
-    fix.ci_status = "failed"
+    fix.ci_status = _ci("failed")
     db.commit()
     _log(db, finding.repo_id, "gave_up", why, finding_id=finding.id, fix_id=fix.id, attempt=fix.repair_attempts)
     if fix.pr_number:
@@ -424,7 +444,7 @@ def handle_ci_result(db, fix_id: int, conclusion: str, log_text: str) -> None:
     attempt = fix.repair_attempts or 0
 
     if conclusion == "success":
-        fix.ci_status = "passed"
+        fix.ci_status = _ci("passed")
         db.commit()
         _log(db, repo.id, "ci_passed", "CI passed; ready for a human to review and merge",
              finding_id=finding.id, fix_id=fix.id, attempt=attempt)
@@ -435,7 +455,7 @@ def handle_ci_result(db, fix_id: int, conclusion: str, log_text: str) -> None:
         return
 
     errors = extract_ci_errors(log_text)
-    fix.ci_status = "failed"
+    fix.ci_status = _ci("failed")
     db.commit()
     _log(db, repo.id, "ci_failed", f"CI failed: {_error_summary(errors)}",
          finding_id=finding.id, fix_id=fix.id, attempt=attempt)
@@ -451,7 +471,8 @@ def handle_ci_result(db, fix_id: int, conclusion: str, log_text: str) -> None:
         return
 
     try:
-        files = gh.get_branch_files(repo.full_name, fix.branch, [finding.file_path])
+        files = {path: text for path, text in
+                 gh.get_branch_files(repo.full_name, fix.branch, [finding.file_path]).items() if text is not None}
         repaired = repair_fix(_finding_dict(finding), files, errors, list(files))
         if repaired["tier"] == "flag_only" or not repaired["edits"]:
             reason = (repaired["validation"]["notes"] or ["repair not possible"])[-1]
@@ -463,8 +484,9 @@ def handle_ci_result(db, fix_id: int, conclusion: str, log_text: str) -> None:
         sha = gh.push_fix_commit(repo.full_name, fix.branch, repaired["edits"],
                                  f"RepoGuard: repair fix after CI failure ({_error_summary(errors)})")
         fix.repair_attempts = attempt + 1
-        fix.head_sha = sha
-        fix.ci_status = "pending"
+        if sha:
+            fix.head_sha = sha
+        fix.ci_status = _ci("pending")
         # keep fix.edits = full change vs the default branch, so the dashboard diff stays right
         fix.edits = [dict(e, new_content=edit["new_content"]) if e["file_path"] == edit["file_path"] else e
                      for e in fix.edits]
