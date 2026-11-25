@@ -9,22 +9,25 @@ import ScanProgress from './pages/ScanProgress';
 import FindingDetail from './pages/FindingDetail';
 import FixReview from './pages/FixReview';
 import NotFound from './pages/NotFound';
+import Login from './pages/Login';
+import { useRepoGuard } from './context/useRepoGuard';
+
+function ProtectedApp() {
+  const { user, authLoading } = useRepoGuard();
+  if (authLoading) return <div className="page-content-padded">Checking session…</div>;
+  if (!user) return <Login />;
+  return <Routes>
+    <Route path="/" element={<Layout />}>
+      <Route index element={<Dashboard />} /><Route path="repositories" element={<Repositories />} /><Route path="repositories/:repoId" element={<RepositoryDetail />} /><Route path="repositories/:repoId/scan" element={<ScanProgress />} /><Route path="findings/:findingId" element={<FindingDetail />} /><Route path="findings/:findingId/fix" element={<FixReview />} /><Route path="*" element={<NotFound />} />
+    </Route>
+  </Routes>;
+}
 
 function App() {
   return (
     <BrowserRouter>
       <RepoGuardProvider>
-        <Routes>
-          <Route path="/" element={<Layout />}>
-            <Route index element={<Dashboard />} />
-            <Route path="repositories" element={<Repositories />} />
-            <Route path="repositories/:repoId" element={<RepositoryDetail />} />
-            <Route path="repositories/:repoId/scan" element={<ScanProgress />} />
-            <Route path="findings/:findingId" element={<FindingDetail />} />
-            <Route path="findings/:findingId/fix" element={<FixReview />} />
-            <Route path="*" element={<NotFound />} />
-          </Route>
-        </Routes>
+        <ProtectedApp />
       </RepoGuardProvider>
     </BrowserRouter>
   );

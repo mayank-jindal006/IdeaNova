@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { useRepoGuard } from '../context/RepoGuardContext';
+import { useRepoGuard } from '../context/useRepoGuard';
 import Header from '../components/Header';
 import EmptyState from '../components/EmptyState';
 import {
@@ -29,17 +29,17 @@ export const ScanProgress = () => {
   const terminalRef = useRef(null);
 
   const stagesList = [
-    { key: 'queued', name: '1. Ingestion', desc: 'Git tree clone & HEAD checkout' },
-    { key: 'scanning_secrets', name: '2. Secret Scan', desc: 'Gitleaks entropy & regex pattern scan' },
-    { key: 'scanning_deps', name: '3. Dependency Scan', desc: 'OSV.dev CVE database reconciliation' },
-    { key: 'analysing', name: '4. Analysis', desc: 'OWASP / ASVS mapping & Heuristic risk computation' },
-    { key: 'completed', name: '5. Completed', desc: 'Telemetry updated & scan artifact recorded' }
+    { key: 'queued', name: '1. Request', desc: 'Submit the selected local checkout to the backend' },
+    { key: 'scanning_secrets', name: '2. Secret Scan', desc: 'Gitleaks binary or explicitly labelled regex fallback' },
+    { key: 'scanning_deps', name: '3. Dependency Scan', desc: 'OSV queries for supported resolved dependencies' },
+    { key: 'analysing', name: '4. Findings', desc: 'Normalize redacted backend results for the dashboard' },
+    { key: 'completed', name: '5. Completed', desc: 'Real backend response stored in the dashboard' }
   ];
 
-  const addLog = (text) => {
+  const addLog = useCallback((text) => {
     const timestamp = new Date().toLocaleTimeString();
     setLogs(prev => [...prev, `[${timestamp}] ${text}`]);
-  };
+  }, []);
 
   useEffect(() => {
     if (terminalRef.current) {
@@ -48,7 +48,7 @@ export const ScanProgress = () => {
   }, [logs]);
 
   // Execute scan
-  const executeScan = async () => {
+  const executeScan = useCallback(async () => {
     if (isScanning || !repo) return;
     setIsScanning(true);
     setErrorMsg(null);
@@ -73,7 +73,7 @@ export const ScanProgress = () => {
     } finally {
       setIsScanning(false);
     }
-  };
+  }, [addLog, isScanning, repo, runScan]);
 
   const hasTriggeredRef = useRef(false);
 
@@ -83,7 +83,7 @@ export const ScanProgress = () => {
       hasTriggeredRef.current = true;
       executeScan();
     }
-  }, [repo]);
+  }, [repo, executeScan]);
 
   if (!repo) {
     return (
@@ -122,7 +122,7 @@ export const ScanProgress = () => {
     <div className="scan-progress-page">
       <Header
         title={`Scan Pipeline: ${repo.name}`}
-        subtitle={`Branch ${repo.defaultBranch} • Real-time Gitleaks and OSV.dev static analysis execution.`}
+        subtitle={`Branch ${repo.defaultBranch} • Backend scan of local checkout: ${repo.scanPath || 'path required'}`}
         breadcrumbs={[
           { label: 'Repositories', path: '/repositories' },
           { label: repo.name, path: `/repositories/${repo.id}` },
@@ -263,6 +263,12 @@ export const ScanProgress = () => {
                 <span className="metric-lbl">Commit Hash</span>
               </div>
             </div>
+            {scanResult?.scannerStatus && (
+              <p className="results-desc text-mono">
+                Secrets: {scanResult.scannerStatus.secrets?.status || 'unknown'} ({scanResult.scannerStatus.secrets?.source || 'unknown'}), Dependencies: {scanResult.scannerStatus.dependencies?.status || 'unknown'} (OSV)
+                {scanResult.scannerStatus.dependencies?.reason ? ` — ${scanResult.scannerStatus.dependencies.reason}` : ''}
+              </p>
+            )}
 
             <div className="results-actions">
               <Link to={`/repositories/${repo.id}`} className="btn-primary">

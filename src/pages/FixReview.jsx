@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { useRepoGuard } from '../context/RepoGuardContext';
+import { useRepoGuard } from '../context/useRepoGuard';
 import Header from '../components/Header';
 import DiffViewer from '../components/DiffViewer';
 import SeverityBadge from '../components/SeverityBadge';
@@ -15,6 +15,22 @@ import {
   FileCodeIcon
 } from '../components/icons';
 
+const FALLBACK_GUIDANCE_MESSAGES = {
+  missing_configuration: 'Gemini is not configured on the server. Rule-based guidance is shown instead.',
+  invalid_provider: 'The configured AI provider is not supported. Rule-based guidance is shown instead.',
+  authentication_or_permission: 'Gemini authentication or permissions were rejected. Rule-based guidance is shown instead.',
+  model_or_endpoint: 'The configured Gemini model or service endpoint was unavailable. Rule-based guidance is shown instead.',
+  rate_limited: 'Gemini is temporarily rate limited. Rule-based guidance is shown instead.',
+  timeout: 'Gemini did not respond before the server timeout. Rule-based guidance is shown instead.',
+  network_or_connection: 'The server could not reach Gemini. Rule-based guidance is shown instead.',
+  malformed_response: 'Gemini returned incomplete guidance. Rule-based guidance is shown instead.',
+  provider_error: 'Gemini was unavailable. Rule-based guidance is shown instead.'
+};
+
+function fallbackGuidanceMessage(reason) {
+  return FALLBACK_GUIDANCE_MESSAGES[reason] || FALLBACK_GUIDANCE_MESSAGES.provider_error;
+}
+
 export const FixReview = () => {
   const { findingId } = useParams();
   const navigate = useNavigate();
@@ -22,11 +38,12 @@ export const FixReview = () => {
 
   const finding = findings.find(f => f.id === findingId);
   const repo = repositories.find(r => r.id === finding?.repoId);
-  const existingFix = fixes[findingId];
+  const existingFix = fixes[findingId]?.source === 'api' ? fixes[findingId] : null;
 
   const [genState, setGenState] = useState(existingFix ? 'generated' : 'idle'); // 'idle' | 'generating' | 'generated' | 'failed'
   const [prState, setPrState] = useState(existingFix?.prNumber ? 'opened' : 'idle'); // 'idle' | 'opening' | 'opened' | 'failed'
   const [errorText, setErrorText] = useState(null);
+  const isGeneratingRef = useRef(false);
 
   if (!finding) {
     return (
@@ -43,15 +60,20 @@ export const FixReview = () => {
 
   // Handle fix generation
   const handleGenerateFix = async () => {
-    if (genState === 'generating') return;
+    if (isGeneratingRef.current) return;
+    isGeneratingRef.current = true;
     setGenState('generating');
     setErrorText(null);
     try {
       await generateFix(finding.id);
       setGenState('generated');
     } catch (err) {
+      // Keep diagnostics useful without logging the finding payload or any secret material.
+      console.warn('RepoGuard AI guidance request failed', { message: err instanceof Error ? err.message : 'Unknown error' });
       setGenState('failed');
-      setErrorText(err.message || 'Fix generation pipeline failed.');
+      setErrorText(err instanceof Error ? err.message : 'AI guidance could not be generated.');
+    } finally {
+      isGeneratingRef.current = false;
     }
   };
 
@@ -69,7 +91,7 @@ export const FixReview = () => {
     }
   };
 
-  const currentFix = fixes[findingId] || existingFix;
+  const currentFix = fixes[findingId]?.source === 'api' ? fixes[findingId] : existingFix;
 
   return (
     <div className="fix-review-page">
@@ -89,20 +111,18 @@ export const FixReview = () => {
             </Link>
 
             {/* Step 1: Generate Fix Button */}
-            {!currentFix && (
-              <button
-                type="button"
-                className="btn-primary"
-                onClick={handleGenerateFix}
-                disabled={genState === 'generating'}
-              >
-                <RefreshCwIcon size={14} className={genState === 'generating' ? 'spin-icon' : ''} />
-                <span>{genState === 'generating' ? 'Generating Validated Patch...' : 'Generate Proposed Fix'}</span>
-              </button>
-            )}
+            <button
+              type="button"
+              className="btn-primary"
+              onClick={handleGenerateFix}
+              disabled={genState === 'generating'}
+            >
+              <RefreshCwIcon size={14} className={genState === 'generating' ? 'spin-icon' : ''} />
+              <span>{genState === 'generating' ? 'Generating guidance...' : currentFix ? 'Refresh AI Guidance' : 'Generate AI Guidance'}</span>
+            </button>
 
             {/* Step 2: Open PR Button */}
-            {currentFix && !currentFix.prNumber && prState !== 'opened' && (
+            {currentFix?.diff && !currentFix.prNumber && prState !== 'opened' && (
               <button
                 type="button"
                 className="btn-primary"
@@ -193,6 +213,21 @@ export const FixReview = () => {
                     'Extract raw secrets into environment variable references (`process.env` or `os.environ`), purge credential literals from source, and verify template configuration.'}
                 </p>
               </div>
+
+              {currentFix?.source === 'api' && (
+                <div className="remediation-strategy-card" role="status">
+                  <h4 className="strategy-heading">
+                    {currentFix.guidanceSource === 'gemini' ? 'Gemini Security Guidance' : 'Rule-Based Security Guidance'}
+                  </h4>
+                  <p className="strategy-text">{currentFix.explanation.what}</p>
+                  {currentFix.explanation.rotationNote && (
+                    <p className="strategy-text">{currentFix.explanation.rotationNote}</p>
+                  )}
+                  <p className="text-xs text-secondary">
+                    Generated from the current finding at {new Date(currentFix.generatedAt).toLocaleString()}. {currentFix.guidanceSource === 'gemini' ? 'Gemini generated this guidance.' : fallbackGuidanceMessage(currentFix.guidanceFailureReason)} This endpoint returned guidance only; no patch or validation was generated.
+                  </p>
+                </div>
+              )}
             </div>
 
             {/* Code Diff Viewer */}
@@ -215,14 +250,14 @@ export const FixReview = () => {
                 />
               ) : (
                 <div className="diff-placeholder-card">
-                  <p>Awaiting fix generation. Click "Generate Proposed Fix" in the header to run AST validation.</p>
+                  <p>This backend endpoint returns remediation guidance only. No code patch or validation result was generated.</p>
                   <button
                     type="button"
                     className="btn-primary btn-sm"
                     onClick={handleGenerateFix}
                     disabled={genState === 'generating'}
                   >
-                    {genState === 'generating' ? 'Generating...' : 'Generate Proposed Fix'}
+                    {genState === 'generating' ? 'Generating...' : 'Generate AI Guidance'}
                   </button>
                 </div>
               )}
@@ -233,10 +268,10 @@ export const FixReview = () => {
               <div className="box-header">
                 <div className="box-title-group">
                   <CheckCircleIcon size={16} className="text-success" />
-                  <h3 className="box-title">Static Analysis AST Validation</h3>
+                  <h3 className="box-title">Patch Validation</h3>
                 </div>
                 <span className={`validation-status-badge ${currentFix?.validation ? 'val-pass' : 'val-pending'}`}>
-                  {currentFix?.validation ? 'PASSED VERIFICATION' : 'NOT RUN'}
+                  {currentFix?.validation ? 'PASSED VERIFICATION' : 'NOT PROVIDED'}
                 </span>
               </div>
 
@@ -252,7 +287,7 @@ export const FixReview = () => {
                   <div className="check-details">
                     <span className="check-title">Zero Matching Token Verification</span>
                     <span className="check-desc">
-                      Gitleaks AST scanner executed over proposed patch to guarantee no residual secrets exist.
+                      No patch was returned by the explanation endpoint, so a post-fix secret scan has not run.
                     </span>
                   </div>
                 </div>
@@ -268,7 +303,7 @@ export const FixReview = () => {
                   <div className="check-details">
                     <span className="check-title">Syntactic Compilation & AST Integrity</span>
                     <span className="check-desc">
-                      Abstract syntax tree parsed cleanly without syntax breakage or unresolved imports.
+                      No patch was returned by the explanation endpoint, so syntax validation has not run.
                     </span>
                   </div>
                 </div>
@@ -276,7 +311,7 @@ export const FixReview = () => {
             </div>
 
             {/* Rotation Requirement Section */}
-            {finding.rotationRequired && (
+            {(currentFix?.explanation?.rotationRequired || finding.rotationRequired) && (
               <div className="panel-box fix-rotation-panel">
                 <RotationChecklist ruleId={finding.ruleId} />
               </div>
@@ -320,7 +355,7 @@ export const FixReview = () => {
                 Deploying this fix opens a clean Git branch with the AST-validated patch file and signs the commit.
               </p>
 
-              {(!currentFix?.prNumber && prState !== 'opened') ? (
+              {currentFix?.diff && (!currentFix?.prNumber && prState !== 'opened') ? (
                 <button
                   type="button"
                   className="btn-primary btn-block"
@@ -330,11 +365,13 @@ export const FixReview = () => {
                   <DiffIcon size={14} />
                   <span>{prState === 'opening' ? 'Opening PR...' : 'Open GitHub Pull Request'}</span>
                 </button>
-              ) : (
+              ) : currentFix?.diff ? (
                 <div className="pr-completed-box">
                   <CheckCircleIcon size={16} className="text-success" />
                   <span>Branch active: PR opened</span>
                 </div>
+              ) : (
+                <p className="pr-pipeline-desc">A pull request is unavailable because the explanation endpoint did not generate a code patch.</p>
               )}
 
               <Link to={`/repositories/${finding.repoId}`} className="btn-secondary btn-block mt-3">
