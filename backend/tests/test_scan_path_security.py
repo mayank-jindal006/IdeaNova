@@ -16,9 +16,11 @@ def test_valid_checkout_is_canonicalized_inside_trusted_root(tmp_path, monkeypat
     root = tmp_path / "trusted"
     checkout = root / "owner" / "repo"
     checkout.mkdir(parents=True)
+    subdir = checkout / "subdir"
+    subdir.mkdir()
     _set_root(monkeypatch, root)
 
-    assert validate_scan_path(checkout / "subdir" / "..") == checkout.resolve()
+    assert validate_scan_path(subdir / "..") == checkout.resolve()
 
 
 def test_checkout_outside_trusted_root_is_rejected(tmp_path, monkeypatch):
