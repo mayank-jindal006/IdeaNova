@@ -2,7 +2,7 @@ name: Backend tests
 
 on:
   push:
-    branches: [integration]
+    branches: [integration, phase4-auth-ci]
   pull_request:
     branches: [integration]
   workflow_dispatch:
