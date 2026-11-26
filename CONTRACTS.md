@@ -45,10 +45,13 @@ Passwords are stored as salted `scrypt` hashes. Tokens expire after
 `JWT_EXPIRY_MINUTES` (30 minutes by default) and require `exp`, `iat`, `sub`,
 and `jti` claims. Logout stores the token identifier in `revoked_tokens`;
 expired revocations are removed as part of logout processing. In production,
-startup rejects a missing, short, or known development
-`REPOGUARD_JWT_SECRET`; deploy a randomly generated backend-only value of at
-least 32 characters. The development default exists only for local development
-and automated tests.
+startup rejects the known development default and missing, short, or
+low-diversity `REPOGUARD_JWT_SECRET` values; deploy a randomly generated
+backend-only value of at least 32 bytes. Login and registration return HTTP
+429 after 10 attempts per normalized account per minute or 120 total requests
+per process per minute by default. The account key is a SHA-256 digest; the
+limiter is process-local and is not shared across replicas. The development
+default exists only for local development and automated tests.
 
 The compatibility scan endpoint accepts an owned `repo_id` and clones the
 tracked GitHub repository into a backend-managed temporary checkout. It never
@@ -65,6 +68,18 @@ fail closed with a safe service-unavailable response; they do not fall back to
 an unrestricted path. Repository clones are created beneath this root and
 removed after scanning. Do not mount user-writable or mutually untrusted
 directories as the scan root.
+
+Production requests are limited to 25 MiB by default and larger bodies return
+HTTP 413. Production hosts must be explicitly allowlisted in
+`REPOGUARD_ALLOWED_HOSTS`; browser CORS origins must be HTTPS, except explicit
+loopback HTTP origins used by local Compose. Uvicorn proxy headers are
+disabled, and FastAPI does not trust forwarded client or scheme headers. Login
+and registration are limited to 10 attempts
+per normalized account per minute and 120 requests per process per minute by
+default; the per-account limiter stores only a SHA-256 digest of the email.
+Production deployments must use one API instance unless the limiter is moved
+to shared storage. Production API failures use generic responses and do not
+include stack traces or internal filesystem paths.
 
 ### FastAPI health and compatibility routes
 

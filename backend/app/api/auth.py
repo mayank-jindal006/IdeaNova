@@ -1,3 +1,4 @@
+import hashlib
 from datetime import datetime, timezone
 
 import jwt
@@ -7,12 +8,24 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.auth import _bearer, current_user, decode_access_token, hash_password, issue_token, verify_password
+from app.core.rate_limit import AuthRateLimiter
 from app.db.models import RevokedToken, User
 from app.db.session import get_db
 from app.schemas import AuthCredentials, TokenOut, UserOut
 from app.settings import settings
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+_auth_rate_limiter = AuthRateLimiter(settings.auth_rate_limit_per_minute)
+_auth_global_rate_limiter = AuthRateLimiter(settings.auth_global_rate_limit_per_minute)
+
+
+def _apply_auth_rate_limit(email: str) -> None:
+    account_key = hashlib.sha256(email.strip().casefold().encode("utf-8")).hexdigest()
+    if (
+        not _auth_rate_limiter.allow(f"account:{account_key}")
+        or not _auth_global_rate_limiter.allow("global")
+    ):
+        raise HTTPException(429, "Too many authentication requests")
 
 
 def _email(value: str) -> str:
@@ -24,6 +37,7 @@ def _email(value: str) -> str:
 
 @router.post("/register", response_model=TokenOut)
 def register(payload: AuthCredentials, db: Session = Depends(get_db)) -> TokenOut:
+    _apply_auth_rate_limit(payload.email)
     email = _email(payload.email)
     if db.scalar(select(User).where(User.email == email)):
         raise HTTPException(409, "An account with that email already exists")
@@ -34,6 +48,7 @@ def register(payload: AuthCredentials, db: Session = Depends(get_db)) -> TokenOu
 
 @router.post("/login", response_model=TokenOut)
 def login(payload: AuthCredentials, db: Session = Depends(get_db)) -> TokenOut:
+    _apply_auth_rate_limit(payload.email)
     user = db.scalar(select(User).where(User.email == _email(payload.email)))
     if not user or not verify_password(payload.password, user.password_hash):
         raise HTTPException(401, "Invalid email or password")

@@ -147,12 +147,11 @@ def generate_security_recommendation(finding: Finding, source_context: str) -> d
         )
     except LLMError as exc:
         logger.warning(
-            "LLM recommendation generation failed provider=%s model=%s category=%s status=%s rule=%s",
+            "LLM recommendation generation failed provider=%s model=%s category=%s status=%s",
             llm_settings.llm_provider,
             llm_settings.llm_model or "unset",
             exc.category,
             exc.status_code if exc.status_code is not None else "unavailable",
-            finding.rule_id or "unknown",
         )
         return _fallback_recommendation(finding, exc.category)
 
