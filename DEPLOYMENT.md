@@ -70,16 +70,16 @@ docker compose up -d
 docker compose ps
 Invoke-RestMethod http://localhost:8080/health/live
 Invoke-RestMethod http://localhost:8080/health/ready
-docker compose exec backend alembic current
+docker compose exec backend python -m alembic current
 ```
 
-The backend startup command runs `alembic upgrade head` before starting
+The backend startup command runs `python -m alembic upgrade head` before starting
 Uvicorn. The following explicit command is also available for a reviewed
 maintenance window; take and verify a database backup before migrations:
 
 ```powershell
-docker compose exec backend alembic upgrade head
-docker compose exec backend alembic check
+docker compose exec backend python -m alembic upgrade head
+docker compose exec backend python -m alembic check
 ```
 
 To follow service logs without exposing environment values:

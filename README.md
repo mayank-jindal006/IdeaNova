@@ -86,7 +86,7 @@ operator-managed and do not share it with untrusted writers.
   for PostgreSQL integration tests.
 - Frontend build: npm run build
 - Frontend lint: npm run lint
-- PostgreSQL migrations: `alembic upgrade head`, `alembic current`, and
+- PostgreSQL migrations: `python -m alembic upgrade head`, `python -m alembic current`, and
   `alembic check` from `backend/` with a disposable PostgreSQL database.
 
 ## Scanner prerequisites

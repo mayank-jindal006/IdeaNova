@@ -142,8 +142,8 @@ jobs:
             http://127.0.0.1:8080/api/auth/me)"
           test "$api_status" = "401"
 
-          docker compose exec -T backend alembic current
-          docker compose exec -T backend alembic check
+          docker compose exec -T backend python -m alembic current
+          docker compose exec -T backend python -m alembic check
 
           docker compose restart backend
           for attempt in $(seq 1 30); do

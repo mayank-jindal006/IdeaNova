@@ -15,6 +15,8 @@ def test_dockerfile_uses_a_versioned_checksum_verified_gitleaks_release():
     assert "FROM ${PYTHON_IMAGE} AS runtime" in dockerfile
     assert "USER 10001:10001" in dockerfile
     assert "HEALTHCHECK" in dockerfile
+    assert "python -m alembic upgrade head" in dockerfile
+    assert '"alembic upgrade head' not in dockerfile
     assert "pip install --no-cache-dir --no-deps -r requirements.lock" in dockerfile
     assert "COPY --from=gitleaks /out/gitleaks /usr/local/bin/gitleaks" in dockerfile
 
