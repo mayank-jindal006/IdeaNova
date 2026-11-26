@@ -53,6 +53,8 @@ def test_frontend_image_is_digest_pinned_and_proxies_api_to_backend():
 
     assert "node:22-alpine@sha256:" in dockerfile
     assert "nginx:1.28-alpine@sha256:" in dockerfile
+    assert dockerfile.index("ARG NGINX_IMAGE=") < dockerfile.index("FROM ${NODE_IMAGE}")
+    assert "FROM ${NGINX_IMAGE} AS runtime" in dockerfile
     assert "npm ci" in dockerfile
     assert "USER 101:101" in dockerfile
     assert 'CMD wget -qO- http://127.0.0.1:8080/ >/dev/null || exit 1' in dockerfile
