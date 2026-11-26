@@ -1,5 +1,9 @@
 import asyncio
+import os
 import re
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 
 import httpx
@@ -99,6 +103,44 @@ def test_production_settings_reject_a_non_loopback_http_origin(monkeypatch, tmp_
         load_settings()
 
 
+def test_docker_compose_jwt_generator_produces_a_production_valid_secret(tmp_path, monkeypatch):
+    repository_root = Path(__file__).resolve().parents[2]
+    workflow = (repository_root / ".github" / "workflows" / "phase7-deployment.yml").read_text(encoding="utf-8")
+    step_match = re.search(
+        r"(?ms)^      - name: Generate ephemeral container JWT key\n        run: \|\n(?P<body>.*?)(?=^      - name:|\Z)",
+        workflow,
+    )
+    assert step_match is not None, "ephemeral JWT generation workflow step is missing"
+    step_body = textwrap.dedent(step_match.group("body"))
+    script_match = re.search(r"(?ms)^python - <<'PY'\n(?P<script>.*?)^PY$", step_body)
+    assert script_match is not None, "JWT generation must use the tested Python generator"
+
+    github_env = tmp_path / "github-env"
+    environment = os.environ.copy()
+    environment["GITHUB_ENV"] = str(github_env)
+    result = subprocess.run(
+        [sys.executable, "-c", script_match.group("script")],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout == ""
+    assert result.stderr == ""
+
+    generated = re.fullmatch(r"REPOGUARD_JWT_SECRET=([^\r\n]+)\n", github_env.read_text(encoding="utf-8"))
+    assert generated is not None
+    secret = generated.group(1)
+    assert len(secret.encode("utf-8")) >= 32
+    assert len(set(secret)) >= 16
+
+    _set_production_environment(monkeypatch, tmp_path)
+    monkeypatch.setenv("REPOGUARD_JWT_SECRET", secret)
+    settings = load_settings()
+    if settings.jwt_secret != secret:
+        pytest.fail("Generated CI JWT secret was not preserved")
+
+
 def test_docker_compose_smoke_workflow_supplies_required_compose_variables():
     repository_root = Path(__file__).resolve().parents[2]
     workflow = (repository_root / ".github" / "workflows" / "phase7-deployment.yml").read_text(encoding="utf-8")
@@ -125,11 +167,10 @@ def test_docker_compose_smoke_workflow_supplies_required_compose_variables():
         "GITHUB_TOKEN",
         "GITHUB_WEBHOOK_SECRET",
     }
-    jwt_key_generation = re.search(
-        r'(?m)^\s*run:\s*echo "REPOGUARD_JWT_SECRET=\$\(openssl rand -hex 32\)" >> "\$GITHUB_ENV"$',
-        job_body,
-    )
-    assert jwt_key_generation is not None, "docker-compose-smoke must generate its JWT key before Compose validation"
+    assert re.search(
+        r"(?ms)^      - name: Generate ephemeral container JWT key\n        run: \|\n.*?secrets\.token_urlsafe\(48\).*?GITHUB_ENV.*?production requirements.*?(?=^      - name:)",
+        workflow,
+    ), "docker-compose-smoke must securely generate and validate an ephemeral JWT key"
     assert required_compose_variables <= workflow_variables | {"REPOGUARD_JWT_SECRET"}
 
     allowed_hosts_match = re.search(
