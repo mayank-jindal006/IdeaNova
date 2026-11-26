@@ -1,8 +1,11 @@
+import asyncio
 import re
 from pathlib import Path
 
+import httpx
 import pytest
 
+from app import main
 from app.settings import load_settings
 
 
@@ -135,3 +138,75 @@ def test_docker_compose_smoke_workflow_supplies_required_compose_variables():
     )
     assert allowed_hosts_match is not None
     assert allowed_hosts_match.group(1) == "localhost,127.0.0.1"
+
+
+@pytest.mark.parametrize(
+    ("location", "upstream_path"),
+    [("= /health", "/health"), ("^~ /health/", "/health/")],
+)
+def test_nginx_health_proxy_forwards_validated_host(location, upstream_path, monkeypatch, tmp_path):
+    repository_root = Path(__file__).resolve().parents[2]
+    nginx = (repository_root / "nginx.conf").read_text(encoding="utf-8")
+    location_match = re.search(
+        rf"(?ms)^        location {re.escape(location)} \{{(?P<body>.*?)^        \}}",
+        nginx,
+    )
+    assert location_match is not None, f"Nginx health location {location} is missing"
+    location_body = location_match.group("body")
+
+    assert f"proxy_pass http://backend:8000{upstream_path};" in location_body
+    assert "proxy_http_version 1.1;" in location_body
+    assert "proxy_set_header Host $host;" in location_body
+    assert "proxy_set_header X-Forwarded-For $remote_addr;" in location_body
+    assert "proxy_set_header X-Forwarded-Host $host;" in location_body
+    assert "proxy_set_header X-Forwarded-Proto $scheme;" in location_body
+
+    _set_production_environment(monkeypatch, tmp_path)
+    monkeypatch.setenv("CORS_ORIGINS", "http://localhost:8080")
+    monkeypatch.setenv("REPOGUARD_ALLOWED_HOSTS", "localhost,127.0.0.1")
+    settings = load_settings()
+    assert "127.0.0.1" in settings.allowed_hosts
+    assert "localhost" in settings.allowed_hosts
+    assert "*" not in settings.allowed_hosts
+
+    dockerfile = (repository_root / "backend" / "Dockerfile").read_text(encoding="utf-8")
+    assert "--no-proxy-headers" in dockerfile
+
+
+def test_production_trusted_host_accepts_nginx_host_and_rejects_upstream_host(monkeypatch, tmp_path):
+    _set_production_environment(monkeypatch, tmp_path)
+    monkeypatch.setenv("CORS_ORIGINS", "http://localhost:8080")
+    monkeypatch.setenv("REPOGUARD_ALLOWED_HOSTS", "localhost,127.0.0.1")
+    production_settings = load_settings()
+    monkeypatch.setattr(main, "settings", production_settings)
+    app = main.create_app()
+
+    async def exercise():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+            accepted = await client.get(
+                "/health/live",
+                headers={"Host": "127.0.0.1", "X-Forwarded-Host": "spoofed.invalid"},
+            )
+            rejected = await client.get("/health/live", headers={"Host": "backend:8000"})
+
+        assert accepted.status_code == 200
+        assert rejected.status_code == 400
+
+    asyncio.run(exercise())
+
+
+def test_compose_smoke_probes_all_health_endpoints_through_nginx():
+    repository_root = Path(__file__).resolve().parents[2]
+    workflow = (repository_root / ".github" / "workflows" / "phase7-deployment.yml").read_text(encoding="utf-8")
+    smoke_match = re.search(
+        r"(?ms)^      - name: Run container deployment smoke test\n        run: \|\n(?P<body>.*?)(?=^      - name:|\Z)",
+        workflow,
+    )
+    assert smoke_match is not None, "Compose deployment smoke step is missing"
+    smoke_body = smoke_match.group("body")
+    for path in ("/health", "/health/live", "/health/ready"):
+        assert re.search(
+            rf"(?m)^\s*curl --fail --silent --show-error http://127\.0\.0\.1:8080{re.escape(path)}$",
+            smoke_body,
+        )
