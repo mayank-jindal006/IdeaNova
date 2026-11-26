@@ -1,3 +1,1 @@
-"""Backend application package."""
-
-__all__ = ["ai"]
+"""RepoGuard backend application package."""

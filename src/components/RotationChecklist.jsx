@@ -1,6 +1,6 @@
 import React from 'react';
 import { KeyIcon, CheckCircleIcon } from './icons';
-import { useRepoGuard } from '../context/RepoGuardContext';
+import { useRepoGuard } from '../context/useRepoGuard';
 
 export const RotationChecklist = ({ ruleId }) => {
   const { rotation, toggleRotationStep } = useRepoGuard();

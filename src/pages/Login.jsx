@@ -1,0 +1,9 @@
+import React, { useState } from 'react';
+import { useRepoGuard } from '../context/useRepoGuard';
+
+export default function Login() {
+  const { authenticate } = useRepoGuard();
+  const [mode, setMode] = useState('login'); const [email, setEmail] = useState(''); const [password, setPassword] = useState(''); const [error, setError] = useState(''); const [pending, setPending] = useState(false);
+  const submit = async (event) => { event.preventDefault(); setPending(true); setError(''); try { await authenticate(mode, { email, password }); } catch (err) { setError(err.message || 'Authentication failed.'); } finally { setPending(false); } };
+  return <main className="page-content-padded"><div className="panel-box" style={{ maxWidth: 440, margin: '5rem auto' }}><h1>{mode === 'login' ? 'Sign in to RepoGuard' : 'Create RepoGuard account'}</h1><form onSubmit={submit}><div className="form-group"><label className="form-label">Email</label><input className="form-input" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} /></div><div className="form-group"><label className="form-label">Password</label><input className="form-input" type="password" minLength="12" required value={password} onChange={(e) => setPassword(e.target.value)} /><span className="form-hint">Use at least 12 characters.</span></div>{error && <div className="form-error-banner" role="alert">{error}</div>}<button className="btn-primary" disabled={pending}>{pending ? 'Please wait…' : mode === 'login' ? 'Sign in' : 'Create account'}</button></form><button className="btn-secondary mt-3" onClick={() => setMode(mode === 'login' ? 'register' : 'login')}>{mode === 'login' ? 'Need an account?' : 'Already have an account?'}</button></div></main>;
+}

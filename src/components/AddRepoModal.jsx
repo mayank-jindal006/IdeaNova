@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { XIcon, PlusIcon } from './icons';
-import { useRepoGuard } from '../context/RepoGuardContext';
+import { useRepoGuard } from '../context/useRepoGuard';
 
 export const AddRepoModal = ({ isOpen, onClose, onRepoAdded }) => {
   const { addRepository } = useRepoGuard();
@@ -32,7 +32,7 @@ export const AddRepoModal = ({ isOpen, onClose, onRepoAdded }) => {
 
   if (!isOpen) return null;
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
 
@@ -46,10 +46,9 @@ export const AddRepoModal = ({ isOpen, onClose, onRepoAdded }) => {
       setError("Repository must follow 'owner/repository' format (e.g. organization/repo-name).");
       return;
     }
-
     setSubmitting(true);
     try {
-      const created = addRepository(trimmed, defaultBranch);
+      const created = await addRepository(trimmed, defaultBranch);
       onRepoAdded?.(created);
       onClose();
     } catch (err) {

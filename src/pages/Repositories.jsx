@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { useRepoGuard } from '../context/RepoGuardContext';
+import { useRepoGuard } from '../context/useRepoGuard';
 import Header from '../components/Header';
 import AddRepoModal from '../components/AddRepoModal';
 import EmptyState from '../components/EmptyState';

@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { useRepoGuard } from '../context/RepoGuardContext';
+import { useRepoGuard } from '../context/useRepoGuard';
 import SeverityBadge from '../components/SeverityBadge';
 import StatusChip from '../components/StatusChip';
 import Header from '../components/Header';
@@ -17,7 +17,7 @@ import {
 } from '../services/repoGuardService';
 
 export const Dashboard = () => {
-  const { repositories, findings, activities, metrics } = useRepoGuard();
+  const { repositories, findings, activities, metrics, loading, apiError, refresh } = useRepoGuard();
 
   // Urgent findings requiring direct attention (Critical/High severity & Open or Needs Rotation)
   const urgentFindings = findings.filter(
@@ -48,6 +48,8 @@ export const Dashboard = () => {
       />
 
       <div className="page-content-padded">
+        {loading && <div className="panel-box mb-4" role="status">Loading persistent security data…</div>}
+        {apiError && <div className="panel-box error-alert-box mb-4" role="alert">{apiError} <button className="btn-sm btn-secondary" onClick={refresh}>Retry</button></div>}
         {/* KPI Summary Cards */}
         <div className="kpi-grid">
           <div className="kpi-card">

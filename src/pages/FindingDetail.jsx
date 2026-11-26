@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { useRepoGuard } from '../context/RepoGuardContext';
+import { useRepoGuard } from '../context/useRepoGuard';
 import Header from '../components/Header';
 import SeverityBadge from '../components/SeverityBadge';
 import StatusChip from '../components/StatusChip';
@@ -143,7 +143,7 @@ export const FindingDetail = () => {
                 <div className="attr-item">
                   <span className="attr-label">Commit SHA</span>
                   <span className="attr-value text-mono text-secondary">
-                    {finding.commitSha ? finding.commitSha.slice(0, 10) : 'a1b2c3d4e5'}
+                    {finding.commitSha ? finding.commitSha.slice(0, 10) : 'Not available'}
                   </span>
                 </div>
                 <div className="attr-item">
@@ -180,7 +180,7 @@ export const FindingDetail = () => {
 
                 <div className="secret-display-row">
                   <div className="masked-secret-token text-mono">
-                    {finding.secretMasked || 'AKIA••••••••••••••••'}
+                    {finding.secretMasked || '[REDACTED]'}
                   </div>
                   <button
                     type="button"
@@ -194,7 +194,7 @@ export const FindingDetail = () => {
                 <div className="secret-fingerprint-row">
                   <span className="fingerprint-label">SHA-256 Fingerprint:</span>
                   <code className="fingerprint-hash text-mono">
-                    {finding.secretFingerprint || 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'}
+                    {finding.secretFingerprint || 'Not available'}
                   </code>
                 </div>
 
@@ -212,7 +212,7 @@ export const FindingDetail = () => {
                     <PackageIcon size={16} className="text-warning" />
                     <h3 className="box-title">Vulnerability Advisory Specification</h3>
                   </div>
-                  <span className="cvss-tag">CVSS {finding.cvss || '7.5'}</span>
+                  <span className="cvss-tag">CVSS {finding.cvssScore ?? 'Not available'}</span>
                 </div>
 
                 <div className="dep-details-grid">
@@ -222,20 +222,53 @@ export const FindingDetail = () => {
                   </div>
                   <div className="dep-detail-cell">
                     <span className="cell-label">Ecosystem</span>
-                    <span className="cell-val">{finding.ecosystem || 'PyPI'}</span>
+                    <span className="cell-val">{finding.ecosystem || 'Not available'}</span>
                   </div>
                   <div className="dep-detail-cell">
                     <span className="cell-label">Installed Version</span>
-                    <span className="cell-val text-mono text-danger">{finding.installedVersion}</span>
+                    <span className="cell-val text-mono text-danger">{finding.installedVersion || 'Not available'}</span>
+                  </div>
+                  <div className="dep-detail-cell">
+                    <span className="cell-label">Affected Version Range</span>
+                    <span className="cell-val text-mono">{finding.affectedVersions || 'Not available'}</span>
                   </div>
                   <div className="dep-detail-cell">
                     <span className="cell-label">Patched Version</span>
-                    <span className="cell-val text-mono text-success">{finding.fixedVersion || '>= 3.1.4'}</span>
+                    <span className="cell-val text-mono text-success">{finding.fixedVersion || 'Not available'}</span>
                   </div>
                   <div className="dep-detail-cell full-width">
                     <span className="cell-label">Vulnerability Advisory</span>
-                    <span className="cell-val text-mono text-primary font-bold">{finding.cve || 'GHSA-xxxx-yyyy'}</span>
+                    <span className="cell-val text-mono text-primary font-bold">{finding.advisoryId || 'Not available'}</span>
                   </div>
+                  {finding.aliases?.length > 0 && (
+                    <div className="dep-detail-cell full-width">
+                      <span className="cell-label">Aliases</span>
+                      <span className="cell-val text-mono">{finding.aliases.join(', ')}</span>
+                    </div>
+                  )}
+                  {finding.references?.length > 0 && (
+                    <div className="dep-detail-cell full-width">
+                      <span className="cell-label">Advisory References</span>
+                      <ul className="advisory-reference-list">
+                        {finding.references.map((reference) => {
+                          let safeUrl;
+                          try {
+                            const parsedUrl = new URL(reference);
+                            if (parsedUrl.protocol === 'https:' || parsedUrl.protocol === 'http:') {
+                              safeUrl = parsedUrl.href;
+                            }
+                          } catch {
+                            safeUrl = null;
+                          }
+                          return safeUrl ? (
+                            <li key={safeUrl}>
+                              <a href={safeUrl} target="_blank" rel="noreferrer">{safeUrl}</a>
+                            </li>
+                          ) : null;
+                        })}
+                      </ul>
+                    </div>
+                  )}
                 </div>
               </div>
             )}

@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { useRepoGuard } from '../context/RepoGuardContext';
+import { useRepoGuard } from '../context/useRepoGuard';
 import Header from '../components/Header';
 import SeverityBadge from '../components/SeverityBadge';
 import StatusChip from '../components/StatusChip';

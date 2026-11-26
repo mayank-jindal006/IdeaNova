@@ -1,14 +1,14 @@
 import React from 'react';
 import { NavLink } from 'react-router-dom';
 import { ShieldIcon, DashboardIcon, RepoIcon, RefreshCwIcon } from './icons';
-import { useRepoGuard } from '../context/RepoGuardContext';
+import { useRepoGuard } from '../context/useRepoGuard';
 
 export const Sidebar = () => {
-  const { metrics, resetAllData } = useRepoGuard();
+  const { metrics, resetAllData, user, logout } = useRepoGuard();
 
   const handleReset = (e) => {
     e.preventDefault();
-    if (window.confirm("Reset all repositories, findings, and scan histories to clean initial defaults?")) {
+    if (window.confirm("Refresh repositories, findings, and scan history from the security service?")) {
       resetAllData();
     }
   };
@@ -37,6 +37,7 @@ export const Sidebar = () => {
           <span>Dashboard</span>
         </NavLink>
 
+
         <NavLink
           to="/repositories"
           className={({ isActive }) => `sidebar-link ${isActive ? 'sidebar-link-active' : ''}`}
@@ -48,6 +49,7 @@ export const Sidebar = () => {
       </nav>
 
       <div className="sidebar-footer">
+        <div className="text-xs text-secondary" title={user?.email}>{user?.email}</div>
         <div className="sidebar-telemetry">
           <div className="telemetry-item">
             <span className="telemetry-label">Active Exposures</span>
@@ -64,10 +66,13 @@ export const Sidebar = () => {
         <button 
           className="sidebar-reset-btn" 
           onClick={handleReset}
-          title="Reset demo data to initial state"
+          title="Refresh persistent security data"
         >
           <RefreshCwIcon size={12} />
-          <span>Reset Demo Data</span>
+          <span>Refresh Security Data</span>
+        </button>
+        <button className="sidebar-reset-btn" onClick={logout} title="Sign out of RepoGuard">
+          <span>Sign Out</span>
         </button>
       </div>
     </aside>
