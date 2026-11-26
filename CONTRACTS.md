@@ -18,9 +18,9 @@ dashboard.
 | GitHub | `app.github_client` | Repository metadata, clone, webhook verification, branches, commits, and PRs. |
 | `backend-node/` | Separate Express Commerce application | Commerce authentication, products, and orders. It is not part of the security API contract. |
 
-The frontend currently consumes the compatibility routes below and keeps
-dashboard data in browser localStorage. The database-backed route family is
-implemented but is not yet the frontend's source of truth.
+The React dashboard uses the database-backed API for authenticated repository,
+scan, finding, and dashboard data. Its short-lived bearer token is held in
+sessionStorage; the separate Commerce application is outside this contract.
 
 ## Base paths and endpoints
 
@@ -30,8 +30,9 @@ implemented but is not yet the frontend's source of truth.
 minimum 12-character password, returning a short-lived HS256 bearer token.
 `GET /api/auth/me` requires that token. The browser keeps the access token in
 sessionStorage (not localStorage) and sends it in the Authorization header;
-closing the browser session requires sign-in again. There is no refresh token
-or production SSO integration yet.
+closing the browser session requires sign-in again. `POST /api/auth/logout`
+revokes the current token in PostgreSQL before the browser clears local state.
+There is no refresh token or production SSO integration yet.
 
 All repository, scan, finding, fix, dashboard, compatibility scan, and
 guidance routes require a verified bearer token. Repositories are owned by a
@@ -41,18 +42,20 @@ remain inaccessible until an administrator assigns their `repos.owner_id`
 through a controlled database operation; they are never adopted automatically.
 
 Passwords are stored as salted `scrypt` hashes. Tokens expire after
-`JWT_EXPIRY_MINUTES` (30 minutes by default). In production, startup rejects a
-missing, short, or known development `REPOGUARD_JWT_SECRET`; deploy a randomly
-generated backend-only value of at least 32 characters. The development default
-exists only for local development and automated tests.
+`JWT_EXPIRY_MINUTES` (30 minutes by default) and require `exp`, `iat`, `sub`,
+and `jti` claims. Logout stores the token identifier in `revoked_tokens`;
+expired revocations are removed as part of logout processing. In production,
+startup rejects a missing, short, or known development
+`REPOGUARD_JWT_SECRET`; deploy a randomly generated backend-only value of at
+least 32 characters. The development default exists only for local development
+and automated tests.
 
 The compatibility scan endpoint accepts an owned `repo_id` and clones the
 tracked GitHub repository into a backend-managed temporary checkout. It never
-accepts or persists a browser-supplied filesystem path. On sign-out the browser
-clears the sessionStorage bearer token and all in-memory tenant data. There is
-no refresh-token or cookie session; for production, replace the sessionStorage
-bearer strategy with secure httpOnly sessions plus CSRF protection or managed
-identity.
+accepts or persists a browser-supplied filesystem path. On sign-out the backend revokes the active token and the browser clears the
+sessionStorage bearer token and all in-memory tenant data, even if the server
+request fails. The UI surfaces a revocation failure rather than claiming the
+server invalidated the token. There is no refresh-token or cookie session.
 
 Every scan requires `REPOGUARD_SCAN_ROOT` to name an existing server-managed
 directory. The backend canonicalizes the root and every checkout, requires
@@ -67,7 +70,9 @@ directories as the scan root.
 
 | Method | Path | Current use |
 | --- | --- | --- |
-| `GET` | `/health` | Health check. |
+| `GET` | `/health` | Process liveness compatibility check. |
+| `GET` | `/health/live` | Process liveness check. |
+| `GET` | `/health/ready` | PostgreSQL readiness check; returns 503 when the database is unavailable. |
 | `POST` | `/api/repositories/scan` | Current React local-checkout scan flow. |
 | `POST` | `/api/findings/explain` | Current React AI guidance flow. |
 
@@ -105,6 +110,7 @@ returns guidance only; it does not generate a patch, validation result, or PR.
 
 | Method | Path | Behavior |
 | --- | --- | --- |
+| `POST` | `/api/auth/logout` | Revoke the authenticated bearer token. |
 | `GET`, `POST` | `/api/repos` | List or create tracked GitHub repositories. |
 | `GET` | `/api/repos/{repo_id}` | Repository and latest score. |
 | `GET` | `/api/repos/{repo_id}/scans` | Persisted scan history with finding counts. |
@@ -119,10 +125,20 @@ returns guidance only; it does not generate a patch, validation result, or PR.
 | `GET` | `/api/dashboard/summary` | Persisted aggregate summary. |
 | `POST` | `/api/webhooks/github` | Verify GitHub push webhook and queue a scan for tracked repositories. |
 
-All database-backed routes require a verified bearer token and scope
-repository-derived data to the authenticated owner. The GitHub webhook route
-is the exception: it uses a valid `X-Hub-Signature-256` signature instead of a
-user token.
+All database-backed routes require a verified, non-revoked bearer token and
+scope repository-derived data to the authenticated owner. Repository names
+are unique case-insensitively per owner, so separate tenants can track the
+same GitHub repository. The GitHub webhook route is the exception: it uses a
+valid `X-Hub-Signature-256` signature instead of a user token.
+
+Push webhooks accept only a valid GitHub `push` payload with a supported
+`owner/repository` name, a valid `refs/heads/...` ref, a 40-character commit
+SHA, and a consistent `deleted` flag. Deleted branches queue no scan. Each
+tracked tenant repository receives its own scan record; duplicate deliveries
+for an already-recorded repository/commit are not queued again. The scanner
+fetches the pushed ref and checks out the exact payload commit, then persists
+that commit SHA and ref. It does not substitute the repository's default
+branch HEAD.
 
 `POST /api/repos` accepts `full_name` and an optional `default_branch`.
 Client-supplied filesystem paths are rejected. Background and compatibility
@@ -263,14 +279,18 @@ GitHub response confirm it.
 
 GitHub requires `GITHUB_TOKEN`; webhook verification also requires
 `GITHUB_WEBHOOK_SECRET`. Clone/PR failures must be sanitized before storage or
-API return.
+API return. Git clone credentials are passed to the child Git process through
+temporary process configuration and environment only; they are excluded from
+command arguments and persistent `.git/config`.
 
 ## Authentication expectations
 
 The RepoGuard FastAPI routes require end-user bearer authentication, except
-`GET /health` and the signed GitHub webhook. Repository-derived API data is
-scoped to the authenticated owner. `backend-node` authentication is a
-separate Commerce concern and is not accepted as FastAPI authorization.
+the health endpoints and the signed GitHub webhook. `/health/ready` verifies
+database connectivity; `/health` and `/health/live` only verify process
+liveness. Repository-derived API data is scoped to the authenticated owner.
+`backend-node` authentication is a separate Commerce concern and is not
+accepted as FastAPI authorization.
 
 All checkout paths are server-generated. `REPOGUARD_SCAN_ROOT` is required at
 scan time and must refer to an existing directory controlled by the backend
@@ -284,6 +304,19 @@ release checksum before extracting it. When updating, select a reviewed
 versioned Gitleaks release, copy the exact architecture-specific SHA-256 values
 from that release's `gitleaks_<version>_checksums.txt`, update the Dockerfile
 version and checksums together, and run `backend/tests/test_dockerfile_security.py`.
+
+Deployment uses PostgreSQL with psycopg, Alembic migrations, explicit CORS
+origins, a trusted scan root, GitHub credentials, and a production JWT secret.
+The backend and frontend images use pinned base-image digests; Python runtime
+dependencies are pinned in `backend/requirements.lock`. The Compose database
+is not published on a host port, and PostgreSQL data is stored in the named
+`postgres_data` volume. See [DEPLOYMENT.md](./DEPLOYMENT.md) for setup,
+migrations, health checks, troubleshooting, and deployment limitations.
+The [Phase 7 workflow](./.github/workflows/phase7-deployment.yml) is configured
+for pushes to `phase7-deployment-readiness`, pull requests targeting
+`integration`, and manual dispatch. Docker and workflow runtime behavior are
+verified only by a successful GitHub Actions run; local YAML validation alone
+is insufficient.
 
 ## Secret redaction requirements
 

@@ -1,9 +1,13 @@
+from datetime import datetime, timezone
+
+import jwt
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from fastapi.security import HTTPAuthorizationCredentials
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from app.auth import current_user, hash_password, issue_token, verify_password
-from app.db.models import User
+from app.auth import _bearer, current_user, decode_access_token, hash_password, issue_token, verify_password
+from app.db.models import RevokedToken, User
 from app.db.session import get_db
 from app.schemas import AuthCredentials, TokenOut, UserOut
 from app.settings import settings
@@ -39,3 +43,23 @@ def login(payload: AuthCredentials, db: Session = Depends(get_db)) -> TokenOut:
 @router.get("/me", response_model=UserOut)
 def me(user: User = Depends(current_user)) -> User:
     return user
+
+
+@router.post("/logout", status_code=204)
+def logout(
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> None:
+    if credentials is None:
+        raise HTTPException(401, "Authentication is required")
+    claims = decode_access_token(credentials.credentials)
+    db.execute(delete(RevokedToken).where(RevokedToken.expires_at <= datetime.now(timezone.utc)))
+    db.add(
+        RevokedToken(
+            token_id=claims["jti"],
+            user_id=user.id,
+            expires_at=datetime.fromtimestamp(claims["exp"], timezone.utc),
+        )
+    )
+    db.commit()

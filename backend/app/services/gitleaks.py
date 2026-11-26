@@ -12,6 +12,7 @@ from typing import Any, Iterable
 
 from app.ai.models import Finding
 from app.core.config import settings
+from app.core.process_env import subprocess_environment
 from app.core.scan_paths import validate_scan_path
 from app.settings import settings as runtime_settings
 
@@ -244,6 +245,7 @@ def scan_repository_secrets(repo_path: str | Path, include_history: bool = False
                 check=False,
                 timeout=runtime_settings.scan_timeout_seconds,
                 cwd=repo_root,
+                env=subprocess_environment(),
             )
         except subprocess.TimeoutExpired:
             return _regex_fallback(repo_root, "gitleaks_timeout")

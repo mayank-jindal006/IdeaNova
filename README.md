@@ -23,15 +23,21 @@ Frontend -> API -> Repo scan service -> Gitleaks/regex scanning -> AI summarizat
 - Redaction: [backend/app/ai/redaction.py](backend/app/ai/redaction.py) masks variable-length secrets using exact line/column boundaries when available.
 - AI prompt layer: [backend/app/services/ai_service.py](backend/app/services/ai_service.py) builds developer-safe prompt payloads.
 
-## Local development
+## Local development and deployment
 
-1. Start the backend:
-   npm run dev:backend
+The reproducible PostgreSQL-backed Compose setup, safe environment
+configuration, migration commands, health checks, and deployment guidance are
+documented in [DEPLOYMENT.md](./DEPLOYMENT.md). The Compose frontend is served
+at `http://localhost:8080` and proxies API and health requests to FastAPI.
+The [Phase 7 CI workflow](./.github/workflows/phase7-deployment.yml) runs
+PostgreSQL migration and integration checks and builds and smoke-tests the
+backend/frontend Compose deployment on GitHub-hosted Ubuntu. A workflow run
+must succeed before CI or Docker runtime verification is claimed.
 
-2. Start the frontend:
-   npm run dev
-
-3. Open the dashboard at http://localhost:5173.
+For frontend-only development, install Node dependencies with `npm ci`, then
+run `npm run dev`. The Vite proxy expects a FastAPI server at
+`http://localhost:8000`; configure that backend with PostgreSQL for integration
+work. Do not use SQLite as evidence of PostgreSQL or deployment behavior.
 
 ## Backend endpoints
 
@@ -75,8 +81,13 @@ operator-managed and do not share it with untrusted writers.
 
 ## Test and validation
 
-- Backend tests: pytest -q backend/tests
+- Backend tests: `python -m pytest backend/tests -q` after installing
+  `backend/requirements-dev.txt` and configuring a disposable test database
+  for PostgreSQL integration tests.
 - Frontend build: npm run build
+- Frontend lint: npm run lint
+- PostgreSQL migrations: `alembic upgrade head`, `alembic current`, and
+  `alembic check` from `backend/` with a disposable PostgreSQL database.
 
 ## Scanner prerequisites
 

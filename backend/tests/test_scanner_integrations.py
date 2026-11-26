@@ -1,4 +1,5 @@
 import json
+import stat
 import subprocess
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -14,9 +15,21 @@ from app.db.models import Finding as DbFinding, Repo, Scan, ScanStatus, ScanTrig
 from app.scanners.deps import Dependency, DependencyScanResult, _finding, _severity, discover_dependencies, scan_dependencies_with_status
 from app.scanners.secrets import scan_secrets, secret_scan_to_persistence
 from app.services.gitleaks import SecretScanResult, scan_repository_secrets
-from app.services.scan_service import _dependency_findings_for_persistence, run_scan
+from app.services.scan_service import _dependency_findings_for_persistence, _remove_checkout, run_scan
 
-_DUMMY_SECRET = "ghp_a8K4mQ2zV7cN9xL3pR6tY1wB5dF0hJ4sG8"
+_DUMMY_SECRET = "ghp_" + "a" * 36
+
+
+def test_checkout_cleanup_removes_read_only_git_objects(tmp_path):
+    checkout = tmp_path / "checkout"
+    git_object = checkout / ".git" / "objects" / "synthetic-object"
+    git_object.parent.mkdir(parents=True)
+    git_object.write_text("synthetic git object", encoding="utf-8")
+    git_object.chmod(stat.S_IREAD)
+
+    _remove_checkout(str(checkout))
+
+    assert not checkout.exists()
 
 
 def _write_report(command, report, returncode=0, **_kwargs):
@@ -338,7 +351,7 @@ def test_osv_unavailable_invalid_and_no_manifest_states(tmp_path):
 
 
 def test_secret_persistence_adapter_redacts_raw_material_and_preserves_source():
-    raw_secret = "ghp_abcdef0123456789abcdef0123456789abcd"
+    raw_secret = _DUMMY_SECRET
     finding = Finding(
         file="app.py", line=5, secret=raw_secret, match=raw_secret, rule_id="github-pat"
     )
@@ -418,6 +431,53 @@ def test_queued_scan_uses_canonical_gitleaks_and_persists_scanner_status(tmp_pat
     dependency_finding = db.scalars(select(DbFinding).where(DbFinding.type == "dependency")).one()
     assert dependency_finding.severity is None
     assert dependency_finding.advisory_id == "OSV-TEST-1"
+    db.close()
+
+
+def test_scan_cleanup_failure_marks_the_scan_failed_without_logging_checkout_path(tmp_path, caplog):
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    db = Session(engine)
+    repo = Repo(full_name="owner/repo", default_branch="main")
+    db.add(repo)
+    db.commit()
+    scan = Scan(repo_id=repo.id, trigger=ScanTrigger.manual, status=ScanStatus.queued)
+    db.add(scan)
+    db.commit()
+    checkout = tmp_path / "synthetic-checkout"
+    checkout.mkdir()
+    completed = subprocess.CompletedProcess(["git"], 0, stdout="fixture-sha\n")
+
+    with patch("app.services.scan_service.clone_repo", return_value=str(checkout)), patch(
+        "app.services.scan_service.subprocess.run", return_value=completed
+    ), patch(
+        "app.services.scan_service.scan_repository_secrets",
+        return_value=SecretScanResult([], "empty", "gitleaks"),
+    ), patch(
+        "app.services.scan_service.scan_dependencies_with_status",
+        return_value=DependencyScanResult([], "empty", None, 0),
+    ), patch(
+        "app.services.scan_service.repo_signals",
+        return_value={
+            "commit_count_90d": 0,
+            "contributor_count": 0,
+            "env_file_tracked": False,
+            "gitignore_has_env": False,
+            "has_precommit_secret_hook": False,
+            "historical_secret_count": 0,
+            "days_since_last_commit": 0,
+        },
+    ), patch(
+        "app.services.scan_service._remove_checkout",
+        side_effect=PermissionError("synthetic cleanup failure"),
+    ):
+        run_scan(db, scan.id)
+
+    persisted = db.get(Scan, scan.id)
+    assert persisted.status == ScanStatus.failed
+    assert persisted.error == "Repository scan cleanup failed"
+    assert "Repository checkout cleanup failed" in caplog.text
+    assert str(checkout) not in caplog.text
     db.close()
 
 

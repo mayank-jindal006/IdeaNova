@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy import desc, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db.models import Finding, Repo, RepoScore, Scan, ScanStatus, ScanTrigger, User
@@ -26,12 +27,21 @@ def list_repos(db: Session = Depends(get_db), user: User = Depends(current_user)
 
 @router.post("")
 def create_repo(payload: RepoCreate, db: Session = Depends(get_db), user: User = Depends(current_user)) -> RepoOut:
-    if db.scalar(select(Repo).where(Repo.full_name == payload.full_name, Repo.owner_id == user.id)):
+    if db.scalar(
+        select(Repo).where(
+            func.lower(Repo.full_name) == payload.full_name.lower(),
+            Repo.owner_id == user.id,
+        )
+    ):
         raise HTTPException(409, "Repository is already tracked")
     branch = payload.default_branch or default_branch(payload.full_name)
     repo = Repo(owner_id=user.id, full_name=payload.full_name, default_branch=branch)
     db.add(repo)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409, "Repository is already tracked") from None
     db.refresh(repo)
     return RepoOut.model_validate(repo)
 

@@ -24,7 +24,19 @@ export const RepoGuardProvider = ({ children }) => {
   }, []);
   useEffect(() => { (async () => { try { setUser(await securityApi.me()); await refresh(); } catch { sessionStorage.removeItem('repoguard_access_token'); } finally { setAuthLoading(false); } })(); }, [refresh]);
   const authenticate = useCallback(async (mode, credentials) => { const session = mode === 'register' ? await securityApi.register(credentials) : await securityApi.login(credentials); sessionStorage.setItem('repoguard_access_token', session.access_token); const account = await securityApi.me(); setUser(account); await refresh(); return account; }, [refresh]);
-  const logout = useCallback(() => { sessionStorage.removeItem('repoguard_access_token'); setUser(null); setState({ repos: [], findings: [], scans: [], fixes: {}, activities: [], rotation: {} }); }, []);
+  const logout = useCallback(async () => {
+    let logoutError;
+    try {
+      if (sessionStorage.getItem('repoguard_access_token')) await securityApi.logout();
+    } catch (error) {
+      logoutError = error;
+    } finally {
+      sessionStorage.removeItem('repoguard_access_token');
+      setUser(null);
+      setState({ repos: [], findings: [], scans: [], fixes: {}, activities: [], rotation: {} });
+      if (logoutError) setApiError('Your local session was cleared, but the server could not invalidate the token. It remains valid until it expires.');
+    }
+  }, []);
   const refreshRepo = useCallback(async (id) => {
     const [findings, scans] = await Promise.all([securityApi.listFindings(id), securityApi.listRepositoryScans(id)]);
     setState((old) => ({ ...old, findings: [...old.findings.filter((x) => x.repoId !== String(id)), ...findings.map(findingView)], scans: [...old.scans.filter((x) => x.repoId !== String(id)), ...scans.map(scanView)] }));
