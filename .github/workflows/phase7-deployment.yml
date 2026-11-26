@@ -124,6 +124,11 @@ jobs:
         run: |
           set -eu
           cleanup() {
+            status=$?
+            if [ "$status" -ne 0 ]; then
+              docker compose ps --all || true
+              docker compose logs --no-color --tail=100 db backend frontend || true
+            fi
             docker compose down --remove-orphans
           }
           trap cleanup EXIT
