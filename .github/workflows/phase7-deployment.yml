@@ -114,12 +114,12 @@ jobs:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
+      - name: Generate ephemeral container JWT key
+        run: echo "REPOGUARD_JWT_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
       - name: Validate Compose configuration
         run: docker compose config --quiet
       - name: Build backend and frontend images
         run: docker compose build --pull
-      - name: Generate ephemeral container JWT key
-        run: echo "REPOGUARD_JWT_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
       - name: Run container deployment smoke test
         run: |
           set -eu

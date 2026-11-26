@@ -69,8 +69,12 @@ def test_gitleaks_subprocess_does_not_inherit_application_secrets(tmp_path, monk
     checkout = root / "empty-repository"
     checkout.mkdir(parents=True)
     monkeypatch.setattr(scan_paths, "settings", replace(scan_settings, scan_root=root))
-    for name in ("DATABASE_URL", "GITHUB_TOKEN", "GITHUB_WEBHOOK_SECRET", "LLM_API_KEY"):
-        monkeypatch.setenv(name, f"synthetic-{name.lower()}")
+    injected_values = {
+        name: f"synthetic-{name.lower()}"
+        for name in ("DATABASE_URL", "GITHUB_TOKEN", "GITHUB_WEBHOOK_SECRET", "LLM_API_KEY")
+    }
+    for name, value in injected_values.items():
+        monkeypatch.setenv(name, value)
     monkeypatch.setenv("HTTPS_PROXY", "http://proxy-user:proxy-password@proxy.test:8080")
     monkeypatch.setattr(gitleaks, "_discover_gitleaks_binary", lambda: ("gitleaks", None))
     captured: dict[str, str] = {}
@@ -94,7 +98,12 @@ def test_gitleaks_subprocess_does_not_inherit_application_secrets(tmp_path, monk
         "LLM_API_KEY",
         "HTTPS_PROXY",
     }.intersection(captured)
-    assert not any("synthetic-" in value or "proxy-password" in value for value in captured.values())
+    assert not any(
+        secret in value
+        for secret in injected_values.values()
+        for value in captured.values()
+    )
+    assert not any("proxy-password" in value for value in captured.values())
 
 
 def test_git_credential_helper_supplies_token_only_to_git_credential_lookup():
