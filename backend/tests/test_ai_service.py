@@ -1,3 +1,4 @@
+import logging
 from unittest.mock import patch
 
 from app.ai.llm import LLMError
@@ -68,6 +69,18 @@ def test_provider_error_returns_labeled_rule_based_fallback():
     assert result["guidance_source"] == "rule_based_fallback"
     assert result["guidance_failure_reason"] == "timeout"
     assert result["requires_rotation"] is True
+
+
+def test_provider_error_does_not_log_untrusted_finding_metadata(caplog):
+    marker = "synthetic-sensitive-rule-value"
+    finding = _finding().model_copy(update={"rule_id": marker})
+    with patch(
+        "app.services.ai_service.complete_json",
+        side_effect=LLMError("provider unavailable", category="timeout"),
+    ), caplog.at_level(logging.WARNING, logger="app.services.ai_service"):
+        generate_security_recommendation(finding, "")
+
+    assert marker not in caplog.text
 
 
 def test_invalid_model_response_returns_labeled_rule_based_fallback():

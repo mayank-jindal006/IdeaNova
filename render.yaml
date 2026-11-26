@@ -1,0 +1,87 @@
+services:
+  - type: web
+    name: repoguard-api
+    runtime: docker
+    region: oregon
+    plan: 1c-2g
+    numInstances: 1
+    branch: integration
+    autoDeployTrigger: 'off'
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    preDeployCommand: python -m alembic upgrade head
+    dockerCommand: python -m uvicorn main:app --host 0.0.0.0 --port 8000 --no-proxy-headers
+    healthCheckPath: /health/ready
+    envVars:
+      - key: PORT
+        value: "8000"
+      - key: REPOGUARD_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: repoguard-db
+          property: connectionString
+      - key: REPOGUARD_JWT_SECRET
+        generateValue: true
+      - key: REPOGUARD_SCAN_ROOT
+        value: /var/lib/repoguard/scans
+      - key: REPOGUARD_CORS_ORIGINS
+        value: https://repoguard-web.onrender.com
+      - key: REPOGUARD_ALLOWED_HOSTS
+        value: repoguard-api.onrender.com
+      - key: REPOGUARD_MAX_REQUEST_BYTES
+        value: "26214400"
+      - key: REPOGUARD_AUTH_RATE_LIMIT_PER_MINUTE
+        value: "10"
+      - key: REPOGUARD_AUTH_GLOBAL_RATE_LIMIT_PER_MINUTE
+        value: "120"
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GITHUB_WEBHOOK_SECRET
+        sync: false
+      - key: DB_POOL_SIZE
+        value: "5"
+      - key: DB_MAX_OVERFLOW
+        value: "10"
+      - key: DB_POOL_TIMEOUT_SECONDS
+        value: "30"
+  - type: web
+    name: repoguard-web
+    runtime: static
+    branch: integration
+    autoDeployTrigger: 'off'
+    buildCommand: npm ci --no-audit --no-fund && npm run build
+    staticPublishPath: ./dist
+    envVars:
+      - key: VITE_API_BASE_URL
+        value: https://repoguard-api.onrender.com
+    headers:
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+      - path: /*
+        name: Referrer-Policy
+        value: strict-origin-when-cross-origin
+      - path: /*
+        name: Strict-Transport-Security
+        value: max-age=31536000
+      - path: /*
+        name: Permissions-Policy
+        value: camera=(), microphone=(), geolocation=()
+      - path: /*
+        name: Content-Security-Policy
+        value: "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data:; connect-src 'self' https://repoguard-api.onrender.com; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+databases:
+  - name: repoguard-db
+    region: oregon
+    plan: 0.5c-1g
+    databaseName: repoguard
+    user: repoguard
+    ipAllowList: []

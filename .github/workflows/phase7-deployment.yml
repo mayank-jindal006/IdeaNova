@@ -107,6 +107,7 @@ jobs:
       POSTGRES_DB: repoguard_phase7_compose
       POSTGRES_PASSWORD: synthetic-compose-postgres-password
       CORS_ORIGINS: http://localhost:8080
+      REPOGUARD_ALLOWED_HOSTS: localhost,127.0.0.1
       GITHUB_TOKEN: ${{ github.run_id }}
       GITHUB_WEBHOOK_SECRET: synthetic-compose-webhook-secret
       PYTHON_DOTENV_DISABLED: "1"
@@ -115,7 +116,21 @@ jobs:
         with:
           persist-credentials: false
       - name: Generate ephemeral container JWT key
-        run: echo "REPOGUARD_JWT_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+        run: |
+          set -eu
+          python - <<'PY'
+          import os
+          import secrets
+
+          for _ in range(10):
+              secret = secrets.token_urlsafe(48)
+              if len(secret.encode("utf-8")) >= 32 and len(set(secret)) >= 16:
+                  with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
+                      env_file.write(f"REPOGUARD_JWT_SECRET={secret}\n")
+                  break
+          else:
+              raise RuntimeError("Could not generate a JWT secret meeting production requirements")
+          PY
       - name: Validate Compose configuration
         run: docker compose config --quiet
       - name: Build backend and frontend images
@@ -134,6 +149,7 @@ jobs:
           trap cleanup EXIT
 
           docker compose up --detach --wait --wait-timeout 240
+          curl --fail --silent --show-error http://127.0.0.1:8080/health
           curl --fail --silent --show-error http://127.0.0.1:8080/health/live
           curl --fail --silent --show-error http://127.0.0.1:8080/health/ready
           curl --fail --silent --show-error http://127.0.0.1:8080/ > /dev/null

@@ -29,6 +29,11 @@ The reproducible PostgreSQL-backed Compose setup, safe environment
 configuration, migration commands, health checks, and deployment guidance are
 documented in [DEPLOYMENT.md](./DEPLOYMENT.md). The Compose frontend is served
 at `http://localhost:8080` and proxies API and health requests to FastAPI.
+The [Render Blueprint](./render.yaml) prepares a TLS-enabled static frontend,
+FastAPI service, and private managed PostgreSQL deployment. It deliberately
+disables automatic deploys. Deployment requires an authorized Render account,
+reviewed resource plans, GitHub repository access, and operator-supplied
+GitHub secrets; no live deployment is implied by this configuration.
 The [Phase 7 CI workflow](./.github/workflows/phase7-deployment.yml) runs
 PostgreSQL migration and integration checks and builds and smoke-tests the
 backend/frontend Compose deployment on GitHub-hosted Ubuntu. A workflow run
@@ -64,8 +69,12 @@ Required scan isolation setting and optional hardening settings:
 
 - REPOGUARD_SCAN_ROOT=<existing backend-managed directory for temporary repository clones>
 - REPOGUARD_CORS_ORIGINS=<comma-separated frontend origins>
+- REPOGUARD_ALLOWED_HOSTS=<comma-separated API hostnames>
 - REPOGUARD_MAX_SCAN_FILE_BYTES=1000000
 - REPOGUARD_MAX_SOURCE_CONTEXT_CHARS=20000
+- REPOGUARD_MAX_REQUEST_BYTES=26214400
+- REPOGUARD_AUTH_RATE_LIMIT_PER_MINUTE=10
+- REPOGUARD_AUTH_GLOBAL_RATE_LIMIT_PER_MINUTE=120
 
 For local development, create an operator-managed directory and set
 `REPOGUARD_SCAN_ROOT` before starting the backend (for example, in
@@ -131,4 +140,8 @@ OSV scans use `https://api.osv.dev/v1/querybatch`. They query exact versions fro
 - Secret values are redacted before any LLM prompt is built.
 - Findings are returned as redacted model objects to the UI.
 - Column metadata is preserved and used when available for precise masking.
+- Production requires an explicit high-entropy JWT secret, PostgreSQL,
+  HTTPS browser origins, and API host allowlisting. Uvicorn proxy headers are
+  disabled, and login/registration use per-account plus process-wide rate
+  limits; request bodies are capped at 25 MiB.
 - The scan engine supports both real Gitleaks JSON and a safe repository fallback when the binary is unavailable.
