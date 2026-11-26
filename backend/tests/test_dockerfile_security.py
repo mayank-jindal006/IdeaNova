@@ -63,3 +63,7 @@ def test_frontend_image_is_digest_pinned_and_proxies_api_to_backend():
     assert 'CMD ["CMD-SHELL"' not in dockerfile
     assert "proxy_pass http://backend:8000/api/" in nginx
     assert "proxy_pass http://backend:8000/health" in nginx
+    assert "fastcgi_temp_path /tmp/fastcgi_temp;" in nginx
+    assert "proxy_temp_path /tmp/proxy_temp;" in nginx
+    assert "scgi_temp_path /tmp/scgi_temp;" in nginx
+    assert "uwsgi_temp_path /tmp/uwsgi_temp;" in nginx
