@@ -71,7 +71,7 @@ export const Sidebar = () => {
           <RefreshCwIcon size={12} />
           <span>Refresh Security Data</span>
         </button>
-        <button className="sidebar-reset-btn" onClick={logout} title="Sign out of RepoGuard">
+        <button className="sidebar-reset-btn sidebar-sign-out-btn" onClick={logout} title="Sign out of RepoGuard">
           <span>Sign Out</span>
         </button>
       </div>

@@ -25,9 +25,17 @@ dist-ssr
 
 # Python / secrets
 .env
+.env.*
+!.env.example
+backend/.env
+backend/.env.*
+!backend/.env.example
 __pycache__/
 *.pyc
 .pytest_cache/
+.pytest_tmp/
+backend/.pytest_tmp/
 venv/
+.venv/
 backend-node/.env
 backend-node/node_modules

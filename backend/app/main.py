@@ -8,8 +8,11 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.router import api_router
+from app.db.session import engine
 from app.routers import findings as compatibility_findings, repositories as compatibility_repositories
 from app.settings import settings
 
@@ -27,7 +30,15 @@ def _error(code: str, message: str, status_code: int, request_id: str | None = N
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="RepoGuard API", version="1.0.0", description="RepoGuard prototype API. OpenAPI documentation is served at /docs.")
+    production = settings.environment in {"production", "prod"}
+    app = FastAPI(
+        title="RepoGuard API",
+        version="1.0.0",
+        description="RepoGuard API.",
+        docs_url=None if production else "/docs",
+        redoc_url=None if production else "/redoc",
+        openapi_url=None if production else "/openapi.json",
+    )
     app.add_middleware(CORSMiddleware, allow_origins=list(settings.cors_origins), allow_methods=["GET", "POST"], allow_headers=["Content-Type", "Authorization", "X-Hub-Signature-256"])
     app.include_router(api_router)
     # Keep the original synchronous scanner/explainer contract available to the
@@ -45,6 +56,19 @@ def create_app() -> FastAPI:
     @app.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/health/live")
+    def liveness() -> dict[str, str]:
+        return {"status": "ok"}
+
+    @app.get("/health/ready")
+    def readiness(request: Request) -> dict[str, str]:
+        try:
+            with engine.connect() as connection:
+                connection.execute(text("SELECT 1"))
+        except SQLAlchemyError:
+            raise HTTPException(503, "Database is unavailable") from None
+        return {"status": "ready"}
 
     @app.exception_handler(HTTPException)
     async def http_error(request: Request, exc: HTTPException) -> JSONResponse:

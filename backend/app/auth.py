@@ -4,6 +4,8 @@ import base64
 import hashlib
 import hmac
 import os
+import uuid
+from typing import Any
 
 import jwt
 from fastapi import Depends, HTTPException
@@ -11,7 +13,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.models import User
+from app.db.models import RevokedToken, User
 from app.db.session import get_db
 from app.settings import settings
 
@@ -36,18 +38,42 @@ def verify_password(password: str, encoded: str) -> bool:
 
 def issue_token(user: User) -> str:
     now = datetime.now(timezone.utc)
-    return jwt.encode({"sub": str(user.id), "iat": now, "exp": now + timedelta(minutes=settings.jwt_expiry_minutes)}, settings.jwt_secret, algorithm="HS256")
+    return jwt.encode(
+        {
+            "sub": str(user.id),
+            "iat": now,
+            "exp": now + timedelta(minutes=settings.jwt_expiry_minutes),
+            "jti": uuid.uuid4().hex,
+        },
+        settings.jwt_secret,
+        algorithm="HS256",
+    )
+
+
+def decode_access_token(token: str) -> dict[str, Any]:
+    claims = jwt.decode(
+        token,
+        settings.jwt_secret,
+        algorithms=["HS256"],
+        options={"require": ["exp", "iat", "sub", "jti"]},
+    )
+    if not isinstance(claims.get("jti"), str) or not claims["jti"]:
+        raise jwt.InvalidTokenError("Token identifier is missing")
+    return claims
 
 
 def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(_bearer), db: Session = Depends(get_db)) -> User:
     if not credentials or credentials.scheme.lower() != "bearer":
         raise HTTPException(401, "Authentication is required")
     try:
-        subject = jwt.decode(credentials.credentials, settings.jwt_secret, algorithms=["HS256"]).get("sub")
+        claims = decode_access_token(credentials.credentials)
+        subject = claims.get("sub")
         user = db.get(User, int(subject)) if subject else None
+        revoked = db.scalar(select(RevokedToken.token_id).where(RevokedToken.token_id == claims["jti"]))
     except (jwt.PyJWTError, ValueError, TypeError):
         user = None
-    if not user:
+        revoked = True
+    if not user or revoked:
         raise HTTPException(401, "Authentication is invalid or expired")
     return user
 

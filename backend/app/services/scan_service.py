@@ -1,20 +1,39 @@
 from __future__ import annotations
 
 import hashlib
+import logging
+import os
 import shutil
+import stat
 import subprocess
 from datetime import datetime, timezone
+from typing import Callable
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.compliance.score import compute_compliance, map_controls
+from app.core.process_env import subprocess_environment
 from app.db.models import Finding, FindingStatus, Repo, RepoScore, Scan, ScanStatus, ScanTrigger
 from app.github_client.client import clone_repo, repo_signals
 from app.risk.heuristic import compute_risk
 from app.scanners.deps import scan_dependencies_with_status
 from app.scanners.secrets import secret_scan_to_persistence
 from app.services.gitleaks import scan_repository_secrets
+
+logger = logging.getLogger(__name__)
+
+
+def _remove_readonly(function: Callable[[str], None], path: str, error: OSError) -> None:
+    try:
+        os.chmod(path, stat.S_IREAD | stat.S_IWRITE)
+        function(path)
+    except OSError:
+        raise error
+
+
+def _remove_checkout(repo_path: str) -> None:
+    shutil.rmtree(repo_path, onexc=_remove_readonly)
 
 
 def _fingerprint(finding: dict) -> str:
@@ -43,6 +62,7 @@ def run_scan(db: Session, scan_id: int) -> None:
             capture_output=True,
             text=True,
             check=True,
+            env=subprocess_environment(),
         ).stdout.strip()
         if pushed_commit and scanned_commit != pushed_commit:
             raise RuntimeError("Checkout does not match the pushed commit")
@@ -94,7 +114,17 @@ def run_scan(db: Session, scan_id: int) -> None:
             db.commit()
     finally:
         if repo_path:
-            shutil.rmtree(repo_path, ignore_errors=True)
+            try:
+                _remove_checkout(repo_path)
+            except OSError:
+                logger.error("Repository checkout cleanup failed scan_id=%s", scan_id)
+                db.rollback()
+                scan = db.get(Scan, scan_id)
+                if scan:
+                    scan.status = ScanStatus.failed
+                    scan.error = "Repository scan cleanup failed"
+                    scan.finished_at = datetime.now(timezone.utc)
+                    db.commit()
 
 
 def _finding_dict(finding: Finding) -> dict:

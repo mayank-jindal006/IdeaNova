@@ -19,6 +19,7 @@ export const securityApi = {
   register: (payload) => request('/api/auth/register', { method: 'POST', body: JSON.stringify(payload) }),
   login: (payload) => request('/api/auth/login', { method: 'POST', body: JSON.stringify(payload) }),
   me: () => request('/api/auth/me'),
+  logout: () => request('/api/auth/logout', { method: 'POST' }),
   listRepositories: () => request('/api/repos'),
   getRepository: (id) => request(`/api/repos/${id}`),
   createRepository: (payload) => request('/api/repos', { method: 'POST', body: JSON.stringify(payload) }),

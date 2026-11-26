@@ -1,0 +1,17 @@
+.git
+.env
+.env.*
+!.env.example
+node_modules
+dist
+dist-ssr
+backend
+backend-node
+scripts
+.pytest_cache
+.pytest_tmp
+__pycache__
+*.py[cod]
+venv
+.venv
+.vscode

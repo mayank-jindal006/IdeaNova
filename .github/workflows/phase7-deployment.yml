@@ -1,0 +1,159 @@
+name: Phase 7 deployment readiness
+
+on:
+  push:
+    branches: [phase7-deployment-readiness]
+  pull_request:
+    branches: [integration]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend-postgresql:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: postgresql+psycopg://postgres:synthetic-postgres-password@127.0.0.1:5432/repoguard_phase7_ci
+      REPOGUARD_PG_TEST_URL: postgresql+psycopg://postgres:synthetic-postgres-password@127.0.0.1:5432/repoguard_phase7_ci
+      REPOGUARD_ENV: development
+      PYTHON_DOTENV_DISABLED: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    services:
+      postgres:
+        image: postgres:18-alpine@sha256:0115267ab5a509022df9319c77be365cef335adb71556c75f60f5360ee247e71
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: synthetic-postgres-password
+          POSTGRES_DB: repoguard_phase7_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d repoguard_phase7_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements-dev.txt
+            backend/requirements.lock
+      - name: Generate ephemeral test JWT key
+        run: echo "REPOGUARD_JWT_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+      - name: Install backend test dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Create isolated scan root
+        run: |
+          echo "REPOGUARD_SCAN_ROOT=$RUNNER_TEMP/repoguard-ci-scans" >> "$GITHUB_ENV"
+          echo "GITLEAKS_BIN=$RUNNER_TEMP/gitleaks/gitleaks" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/repoguard-ci-scans"
+      - name: Install checksum-verified Gitleaks
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/gitleaks"
+          archive="gitleaks_8.30.1_linux_x64.tar.gz"
+          curl -fsSLo "$RUNNER_TEMP/$archive" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/$archive"
+          printf '%s  %s\n' \
+            '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb' \
+            "$RUNNER_TEMP/$archive" | sha256sum --check --status
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP/gitleaks" gitleaks
+          "$GITLEAKS_BIN" version
+      - name: Compile backend and tests
+        run: python -m compileall -q app tests
+      - name: Upgrade fresh PostgreSQL database
+        run: python -m alembic upgrade head
+      - name: Verify Alembic head and schema
+        run: |
+          python -m alembic current
+          python -m alembic heads
+          python -m alembic check
+      - name: Verify safe migration downgrade and re-upgrade
+        run: |
+          python -m alembic downgrade 0006_scan_push_ref
+          python -m alembic upgrade head
+          python -m alembic check
+      - name: Run authentication, tenant, webhook, scanner, and configuration tests
+        run: >-
+          python -m pytest
+          tests/test_auth_asgi.py
+          tests/test_github_client_security.py
+          tests/test_scanner_integrations.py
+          tests/test_deployment_config.py
+          tests/test_dockerfile_security.py
+          -q --disable-warnings --maxfail=1
+      - name: Run complete backend suite
+        run: python -m pytest tests -q --disable-warnings --maxfail=1
+      - name: Run live PostgreSQL, Gitleaks, and OSV end-to-end test
+        env:
+          REPOGUARD_LIVE_SCANNER_TESTS: "1"
+        run: python -m pytest tests/test_postgresql_integration.py -q --disable-warnings --maxfail=1
+
+  docker-compose-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      POSTGRES_USER: repoguard_ci
+      POSTGRES_DB: repoguard_phase7_compose
+      POSTGRES_PASSWORD: synthetic-compose-postgres-password
+      CORS_ORIGINS: http://localhost:8080
+      GITHUB_TOKEN: ${{ github.run_id }}
+      GITHUB_WEBHOOK_SECRET: synthetic-compose-webhook-secret
+      PYTHON_DOTENV_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Generate ephemeral container JWT key
+        run: echo "REPOGUARD_JWT_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+      - name: Validate Compose configuration
+        run: docker compose config --quiet
+      - name: Build backend and frontend images
+        run: docker compose build --pull
+      - name: Run container deployment smoke test
+        run: |
+          set -eu
+          cleanup() {
+            status=$?
+            if [ "$status" -ne 0 ]; then
+              docker compose ps --all || true
+              docker compose logs --no-color --tail=100 db backend frontend || true
+            fi
+            docker compose down --remove-orphans
+          }
+          trap cleanup EXIT
+
+          docker compose up --detach --wait --wait-timeout 240
+          curl --fail --silent --show-error http://127.0.0.1:8080/health/live
+          curl --fail --silent --show-error http://127.0.0.1:8080/health/ready
+          curl --fail --silent --show-error http://127.0.0.1:8080/ > /dev/null
+
+          api_status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:8080/api/auth/me)"
+          test "$api_status" = "401"
+
+          docker compose exec -T backend python -m alembic current
+          docker compose exec -T backend python -m alembic check
+
+          docker compose restart backend
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8080/health/ready > /dev/null; then
+              break
+            fi
+            sleep 2
+          done
+          curl --fail --silent --show-error http://127.0.0.1:8080/health/ready
+          docker compose stop --timeout 20
+      - name: Stop Compose services after failure
+        if: always()
+        run: docker compose down --remove-orphans

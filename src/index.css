@@ -1836,7 +1836,19 @@ button:disabled, .btn-primary:disabled, .btn-secondary:disabled {
     border-bottom: 1px solid var(--border-default);
   }
   .sidebar-footer {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding: 8px 12px;
+    border-top: none;
+  }
+  .sidebar-footer > .text-xs,
+  .sidebar-footer > .sidebar-telemetry,
+  .sidebar-footer > .sidebar-reset-btn:not(.sidebar-sign-out-btn) {
     display: none;
+  }
+  .sidebar-footer > .sidebar-sign-out-btn {
+    width: auto;
   }
   .sidebar-nav {
     flex-direction: row;

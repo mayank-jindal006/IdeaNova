@@ -59,11 +59,20 @@ def test_authentication_and_two_user_tenant_isolation():
                 response = await (client.post(path, headers=b_headers) if path.endswith('/scan') else client.get(path, headers=b_headers))
                 assert response.status_code == 404
             assert (await client.get("/api/dashboard/summary", headers=b_headers)).json()["totals"]["repos"] == 0
+            second_repo = await client.post(
+                "/api/repos",
+                headers=b_headers,
+                json={"full_name": "a/repo", "default_branch": "main"},
+            )
+            assert second_repo.status_code == 200
+            assert second_repo.json()["id"] != repo_id
             expired = jwt.encode({"sub": "1", "exp": datetime.now(timezone.utc) - timedelta(minutes=1)}, settings.jwt_secret, algorithm="HS256")
             assert (await client.get("/api/auth/me", headers={"Authorization": f"Bearer {expired}"})).status_code == 401
             assert (await client.get("/api/auth/me", headers={"Authorization": "Bearer invalid"})).status_code == 401
             assert (await client.post("/api/repositories/scan", headers=b_headers, json={"repo_id": repo_id})).status_code == 404
             db = Session(engine); db.add(Repo(full_name="legacy/repo", default_branch="main", owner_id=None)); db.commit(); db.close()
             assert all(item["full_name"] != "legacy/repo" for item in (await client.get("/api/repos", headers=a_headers)).json())
+            assert (await client.post("/api/auth/logout", headers=b_headers)).status_code == 204
+            assert (await client.get("/api/auth/me", headers=b_headers)).status_code == 401
     asyncio.run(exercise())
     app.dependency_overrides.clear()

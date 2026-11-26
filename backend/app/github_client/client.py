@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import os
 import re
 import shutil
 import subprocess
@@ -11,6 +10,7 @@ from pathlib import Path
 
 from github import Github
 
+from app.core.process_env import subprocess_environment
 from app.core.scan_paths import require_scan_root, validate_scan_path
 from app.settings import settings
 
@@ -37,10 +37,7 @@ def is_valid_github_push_ref(ref: object) -> bool:
 
 
 def _git_auth_environment(token: str) -> dict[str, str]:
-    environment = dict(os.environ)
-    for key in tuple(environment):
-        if key.startswith("GIT_TRACE") or key in {"GIT_CURL_VERBOSE", "GIT_CONFIG_PARAMETERS"}:
-            environment.pop(key)
+    environment = subprocess_environment(include_proxy=True)
     environment.update({
         "GIT_TERMINAL_PROMPT": "0",
         "GIT_CONFIG_COUNT": "2",
@@ -58,7 +55,13 @@ def _git_auth_environment(token: str) -> dict[str, str]:
 
 
 def _run_git(command: list[str], environment: dict[str, str] | None = None) -> None:
-    subprocess.run(command, check=True, capture_output=True, text=True, env=environment)
+    subprocess.run(
+        command,
+        check=True,
+        capture_output=True,
+        text=True,
+        env=environment if environment is not None else subprocess_environment(),
+    )
 
 
 def _github() -> Github:
@@ -139,8 +142,15 @@ def verify_webhook_signature(payload: bytes, signature: str | None) -> bool:
 def repo_signals(repo_path: str) -> dict:
     root = Path(repo_path)
     gitignore = (root / ".gitignore").read_text(encoding="utf-8", errors="ignore") if (root / ".gitignore").exists() else ""
-    commits = subprocess.run(["git", "-C", repo_path, "rev-list", "--count", "--since=90.days", "HEAD"], capture_output=True, text=True, check=False).stdout.strip()
-    contributors = subprocess.run(["git", "-C", repo_path, "shortlog", "-sne", "HEAD"], capture_output=True, text=True, check=False).stdout.splitlines()
-    last_commit = subprocess.run(["git", "-C", repo_path, "log", "-1", "--format=%ct"], capture_output=True, text=True, check=False).stdout.strip()
+    environment = subprocess_environment()
+    commits = subprocess.run(["git", "-C", repo_path, "rev-list", "--count", "--since=90.days", "HEAD"], capture_output=True, text=True, check=False, env=environment).stdout.strip()
+    contributors = subprocess.run(["git", "-C", repo_path, "shortlog", "-sne", "HEAD"], capture_output=True, text=True, check=False, env=environment).stdout.splitlines()
+    last_commit = subprocess.run(["git", "-C", repo_path, "log", "-1", "--format=%ct"], capture_output=True, text=True, check=False, env=environment).stdout.strip()
     import time
-    return {"commit_count_90d": int(commits or 0), "contributor_count": len(contributors), "env_file_tracked": bool(subprocess.run(["git", "-C", repo_path, "ls-files", ".env"], capture_output=True, text=True).stdout.strip()), "gitignore_has_env": ".env" in gitignore, "has_precommit_secret_hook": (root / ".git" / "hooks" / "pre-commit").exists(), "historical_secret_count": 0, "days_since_last_commit": int((time.time() - int(last_commit)) / 86400) if last_commit else 0}
+    tracked_env = subprocess.run(
+        ["git", "-C", repo_path, "ls-files", ".env"],
+        capture_output=True,
+        text=True,
+        env=environment,
+    ).stdout.strip()
+    return {"commit_count_90d": int(commits or 0), "contributor_count": len(contributors), "env_file_tracked": bool(tracked_env), "gitignore_has_env": ".env" in gitignore, "has_precommit_secret_hook": (root / ".git" / "hooks" / "pre-commit").exists(), "historical_secret_count": 0, "days_since_last_commit": int((time.time() - int(last_commit)) / 86400) if last_commit else 0}
