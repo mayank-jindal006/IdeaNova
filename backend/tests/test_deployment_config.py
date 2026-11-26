@@ -1,3 +1,6 @@
+import re
+from pathlib import Path
+
 import pytest
 
 from app.settings import load_settings
@@ -91,3 +94,44 @@ def test_production_settings_reject_a_non_loopback_http_origin(monkeypatch, tmp_
 
     with pytest.raises(RuntimeError, match="HTTPS origins"):
         load_settings()
+
+
+def test_docker_compose_smoke_workflow_supplies_required_compose_variables():
+    repository_root = Path(__file__).resolve().parents[2]
+    workflow = (repository_root / ".github" / "workflows" / "phase7-deployment.yml").read_text(encoding="utf-8")
+    compose = (repository_root / "docker-compose.yml").read_text(encoding="utf-8")
+
+    job_match = re.search(
+        r"(?ms)^  docker-compose-smoke:\n(?P<body>.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)",
+        workflow,
+    )
+    assert job_match is not None, "docker-compose-smoke job is missing"
+    job_body = job_match.group("body")
+    env_match = re.search(r"(?ms)^    env:\n(?P<env>.*?)(?=^    steps:|\Z)", job_body)
+    assert env_match is not None, "docker-compose-smoke job-level environment is missing"
+    workflow_variables = set(re.findall(r"(?m)^      ([A-Z_][A-Z0-9_]*):", env_match.group("env")))
+
+    required_compose_variables = set(re.findall(r"\$\{([A-Z_][A-Z0-9_]*):\?", compose))
+    assert required_compose_variables == {
+        "POSTGRES_USER",
+        "POSTGRES_DB",
+        "POSTGRES_PASSWORD",
+        "REPOGUARD_JWT_SECRET",
+        "CORS_ORIGINS",
+        "REPOGUARD_ALLOWED_HOSTS",
+        "GITHUB_TOKEN",
+        "GITHUB_WEBHOOK_SECRET",
+    }
+    jwt_key_generation = re.search(
+        r'(?m)^\s*run:\s*echo "REPOGUARD_JWT_SECRET=\$\(openssl rand -hex 32\)" >> "\$GITHUB_ENV"$',
+        job_body,
+    )
+    assert jwt_key_generation is not None, "docker-compose-smoke must generate its JWT key before Compose validation"
+    assert required_compose_variables <= workflow_variables | {"REPOGUARD_JWT_SECRET"}
+
+    allowed_hosts_match = re.search(
+        r"(?m)^      REPOGUARD_ALLOWED_HOSTS:\s*(\S.*?)\s*$",
+        env_match.group("env"),
+    )
+    assert allowed_hosts_match is not None
+    assert allowed_hosts_match.group(1) == "localhost,127.0.0.1"

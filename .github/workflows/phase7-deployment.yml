@@ -107,6 +107,7 @@ jobs:
       POSTGRES_DB: repoguard_phase7_compose
       POSTGRES_PASSWORD: synthetic-compose-postgres-password
       CORS_ORIGINS: http://localhost:8080
+      REPOGUARD_ALLOWED_HOSTS: localhost,127.0.0.1
       GITHUB_TOKEN: ${{ github.run_id }}
       GITHUB_WEBHOOK_SECRET: synthetic-compose-webhook-secret
       PYTHON_DOTENV_DISABLED: "1"
