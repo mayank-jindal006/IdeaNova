@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.compliance.score import compute_compliance, map_controls
-from app.db.models import Finding, FindingStatus, Repo, RepoScore, Scan, ScanStatus
+from app.db.models import Finding, FindingStatus, Repo, RepoScore, Scan, ScanStatus, ScanTrigger
 from app.github_client.client import clone_repo, repo_signals
 from app.risk.heuristic import compute_risk
 from app.scanners.deps import scan_dependencies_with_status
@@ -33,8 +33,20 @@ def run_scan(db: Session, scan_id: int) -> None:
         repo = db.get(Repo, scan.repo_id)
         if not repo:
             raise RuntimeError("Repository no longer exists")
-        repo_path = clone_repo(repo.full_name)
-        scan.commit_sha = subprocess.run(["git", "-C", repo_path, "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+        pushed_commit = scan.commit_sha if scan.trigger == ScanTrigger.push else None
+        pushed_ref = scan.ref if scan.trigger == ScanTrigger.push else None
+        if scan.trigger == ScanTrigger.push and (not pushed_commit or not pushed_ref):
+            raise RuntimeError("Push scan is missing its validated ref or commit")
+        repo_path = clone_repo(repo.full_name, commit_sha=pushed_commit, ref=pushed_ref)
+        scanned_commit = subprocess.run(
+            ["git", "-C", repo_path, "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        if pushed_commit and scanned_commit != pushed_commit:
+            raise RuntimeError("Checkout does not match the pushed commit")
+        scan.commit_sha = scanned_commit
         secret_scan = scan_repository_secrets(repo_path, include_history=True)
         dependency_scan = scan_dependencies_with_status(repo_path)
         findings = secret_scan_to_persistence(secret_scan) + _dependency_findings_for_persistence(dependency_scan.findings)

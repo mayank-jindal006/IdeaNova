@@ -91,6 +91,7 @@ class Scan(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     repo_id: Mapped[int] = mapped_column(ForeignKey("repos.id"), nullable=False)
     trigger: Mapped[ScanTrigger] = mapped_column(Enum(ScanTrigger), nullable=False)
+    ref: Mapped[Optional[str]] = mapped_column(String)
     commit_sha: Mapped[Optional[str]] = mapped_column(String)
     status: Mapped[ScanStatus] = mapped_column(Enum(ScanStatus), nullable=False)
     scanner_status: Mapped[Optional[dict]] = mapped_column(JsonValue)

@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import httpx
+import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
@@ -417,4 +418,94 @@ def test_queued_scan_uses_canonical_gitleaks_and_persists_scanner_status(tmp_pat
     dependency_finding = db.scalars(select(DbFinding).where(DbFinding.type == "dependency")).one()
     assert dependency_finding.severity is None
     assert dependency_finding.advisory_id == "OSV-TEST-1"
+    db.close()
+
+
+@pytest.mark.parametrize(
+    ("ref", "commit_sha"),
+    [
+        ("refs/heads/main", "1" * 40),
+        ("refs/heads/feature/security", "2" * 40),
+    ],
+)
+def test_push_scan_checks_out_and_persists_the_exact_pushed_commit(tmp_path, ref, commit_sha):
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    db = Session(engine)
+    repo = Repo(full_name="owner/repo", default_branch="main")
+    db.add(repo)
+    db.commit()
+    scan = Scan(
+        repo_id=repo.id,
+        trigger=ScanTrigger.push,
+        ref=ref,
+        commit_sha=commit_sha,
+        status=ScanStatus.queued,
+    )
+    db.add(scan)
+    db.commit()
+    completed = subprocess.CompletedProcess(["git"], 0, stdout=f"{commit_sha}\n")
+
+    with patch("app.services.scan_service.clone_repo", return_value=str(tmp_path)) as clone, patch(
+        "app.services.scan_service.subprocess.run", return_value=completed
+    ), patch(
+        "app.services.scan_service.scan_repository_secrets",
+        return_value=SecretScanResult([], "completed", "gitleaks"),
+    ), patch(
+        "app.services.scan_service.scan_dependencies_with_status",
+        return_value=DependencyScanResult([], "completed", None, 0),
+    ), patch(
+        "app.services.scan_service.repo_signals",
+        return_value={
+            "commit_count_90d": 0,
+            "contributor_count": 0,
+            "env_file_tracked": False,
+            "gitignore_has_env": False,
+            "has_precommit_secret_hook": False,
+            "historical_secret_count": 0,
+            "days_since_last_commit": 0,
+        },
+    ):
+        run_scan(db, scan.id)
+
+    clone.assert_called_once_with("owner/repo", commit_sha=commit_sha, ref=ref)
+    persisted = db.get(Scan, scan.id)
+    assert persisted.status == ScanStatus.done
+    assert persisted.ref == ref
+    assert persisted.commit_sha == commit_sha
+    db.close()
+
+
+def test_push_scan_fails_safely_if_checkout_sha_does_not_match_payload(tmp_path):
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    db = Session(engine)
+    repo = Repo(full_name="owner/repo", default_branch="main")
+    db.add(repo)
+    db.commit()
+    expected_sha = "1" * 40
+    scan = Scan(
+        repo_id=repo.id,
+        trigger=ScanTrigger.push,
+        ref="refs/heads/feature/security",
+        commit_sha=expected_sha,
+        status=ScanStatus.queued,
+    )
+    db.add(scan)
+    db.commit()
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    completed = subprocess.CompletedProcess(["git"], 0, stdout=f"{'2' * 40}\n")
+
+    with patch("app.services.scan_service.clone_repo", return_value=str(checkout)), patch(
+        "app.services.scan_service.subprocess.run", return_value=completed
+    ), patch("app.services.scan_service.scan_repository_secrets") as secret_scan:
+        run_scan(db, scan.id)
+
+    persisted = db.get(Scan, scan.id)
+    assert persisted.status == ScanStatus.failed
+    assert persisted.commit_sha == expected_sha
+    assert persisted.error == "Repository scan failed"
+    secret_scan.assert_not_called()
+    assert not checkout.exists()
     db.close()

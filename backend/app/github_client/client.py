@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import os
 import re
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from urllib.parse import quote
 
 from github import Github
 
@@ -15,6 +15,50 @@ from app.core.scan_paths import require_scan_root, validate_scan_path
 from app.settings import settings
 
 _GITHUB_FULL_NAME = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?/[A-Za-z0-9_.-]+$")
+_GIT_COMMIT_SHA = re.compile(r"^[0-9a-f]{40}$")
+
+
+def is_valid_github_full_name(full_name: object) -> bool:
+    return isinstance(full_name, str) and _GITHUB_FULL_NAME.fullmatch(full_name) is not None
+
+
+def is_valid_github_push_ref(ref: object) -> bool:
+    if not isinstance(ref, str) or not ref.startswith("refs/heads/"):
+        return False
+    branch = ref.removeprefix("refs/heads/")
+    if not branch or branch.startswith("-") or branch.endswith("/") or "//" in branch or ".." in branch or "@{" in branch or branch.endswith("."):
+        return False
+    forbidden = set(" ~^:?*[\\")
+    components = branch.split("/")
+    return not any(character in forbidden or ord(character) < 32 or ord(character) == 127 for character in branch) and all(
+        component and not component.startswith(".") and not component.lower().endswith(".lock")
+        for component in components
+    )
+
+
+def _git_auth_environment(token: str) -> dict[str, str]:
+    environment = dict(os.environ)
+    for key in tuple(environment):
+        if key.startswith("GIT_TRACE") or key in {"GIT_CURL_VERBOSE", "GIT_CONFIG_PARAMETERS"}:
+            environment.pop(key)
+    environment.update({
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_CONFIG_COUNT": "2",
+        "GIT_CONFIG_KEY_0": "credential.helper",
+        "GIT_CONFIG_VALUE_0": "",
+        "GIT_CONFIG_KEY_1": "credential.helper",
+        "GIT_CONFIG_VALUE_1": (
+            '!f() { if [ "$1" = get ]; then '
+            'printf "username=x-access-token\\npassword=%s\\n\\n" "$REPOGUARD_GIT_TOKEN"; '
+            "fi; }; f"
+        ),
+        "REPOGUARD_GIT_TOKEN": token,
+    })
+    return environment
+
+
+def _run_git(command: list[str], environment: dict[str, str] | None = None) -> None:
+    subprocess.run(command, check=True, capture_output=True, text=True, env=environment)
 
 
 def _github() -> Github:
@@ -27,22 +71,38 @@ def default_branch(full_name: str) -> str:
     return _github().get_repo(full_name).default_branch
 
 
-def clone_repo(full_name: str) -> str:
-    """Clone complete history into a validated server-managed checkout."""
-    if not _GITHUB_FULL_NAME.fullmatch(full_name):
+def clone_repo(full_name: str, commit_sha: str | None = None, ref: str | None = None) -> str:
+    """Clone a repository without persisting credentials, optionally at a pushed commit."""
+    if not is_valid_github_full_name(full_name):
         raise ValueError("Repository name is invalid")
+    if (commit_sha is None) != (ref is None):
+        raise ValueError("A pushed commit and ref must be provided together")
+    if commit_sha is not None and (not _GIT_COMMIT_SHA.fullmatch(commit_sha) or not is_valid_github_push_ref(ref)):
+        raise ValueError("Pushed commit or ref is invalid")
+    if not settings.github_token:
+        raise RuntimeError("GITHUB_TOKEN is not configured")
+
     root = require_scan_root()
     target = Path(tempfile.mkdtemp(prefix="repoguard-", dir=root))
-    url = f"https://x-access-token:{quote(settings.github_token or '', safe='')}@github.com/{full_name}.git"
+    url = f"https://github.com/{full_name}.git"
+    environment = _git_auth_environment(settings.github_token)
     try:
-        subprocess.run(["git", "clone", url, str(target)], check=True, capture_output=True, text=True)
+        clone_command = ["git", "clone"]
+        if commit_sha is not None:
+            clone_command.append("--no-checkout")
+        _run_git([*clone_command, url, str(target)], environment)
+        if commit_sha is not None and ref is not None:
+            fetched_ref = "refs/repoguard/push"
+            _run_git(
+                ["git", "-C", str(target), "fetch", "--no-tags", "origin", f"+{ref}:{fetched_ref}"],
+                environment,
+            )
+            _run_git(["git", "-C", str(target), "merge-base", "--is-ancestor", commit_sha, fetched_ref])
+            _run_git(["git", "-C", str(target), "checkout", "--detach", commit_sha])
         return str(validate_scan_path(target))
-    except subprocess.CalledProcessError:
-        shutil.rmtree(target, ignore_errors=True)
-        raise RuntimeError("Repository checkout failed") from None
     except Exception:
         shutil.rmtree(target, ignore_errors=True)
-        raise
+        raise RuntimeError("Repository checkout failed") from None
 
 
 def create_branch(full_name: str, branch: str, base_branch: str) -> None:
