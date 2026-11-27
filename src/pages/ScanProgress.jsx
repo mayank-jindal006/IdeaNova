@@ -3,6 +3,7 @@ import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useRepoGuard } from '../context/useRepoGuard';
 import Header from '../components/Header';
 import EmptyState from '../components/EmptyState';
+import { scanCommit, scanOutcome } from '../services/scanPresentation';
 import {
   RefreshCwIcon,
   CheckCircleIcon,
@@ -61,7 +62,7 @@ export const ScanProgress = () => {
         addLog(update.label);
       });
       setScanResult(result);
-      addLog(`Scan pipeline finished. Discovered ${result.findingsCount} active finding(s). Duration: ${result.durationSeconds}s.`);
+      addLog(`Scan pipeline finished. Duration: ${result.durationSeconds == null ? 'unavailable' : `${result.durationSeconds}s`}.`);
     } catch (err) {
       setScanState({
         stage: 'failed',
@@ -122,7 +123,7 @@ export const ScanProgress = () => {
     <div className="scan-progress-page">
       <Header
         title={`Scan Pipeline: ${repo.name}`}
-        subtitle={`Branch ${repo.defaultBranch} • Backend scan of local checkout: ${repo.scanPath || 'path required'}`}
+        subtitle={`Branch ${repo.defaultBranch} • Backend repository scan`}
         breadcrumbs={[
           { label: 'Repositories', path: '/repositories' },
           { label: repo.name, path: `/repositories/${repo.id}` },
@@ -151,7 +152,7 @@ export const ScanProgress = () => {
           <div className="scan-header-top">
             <div className="scan-status-info">
               <span className={`status-pill ${scanState.stage === 'completed' ? 'pill-success' : scanState.stage === 'failed' ? 'pill-danger' : 'pill-active'}`}>
-                {scanState.stage === 'completed' ? 'SCAN COMPLETE' : scanState.stage === 'failed' ? 'SCAN FAILED' : 'ANALYSIS IN PROGRESS'}
+                {scanState.stage === 'completed' ? (scanOutcome(scanResult?.status, scanResult?.scannerStatus) === 'success' ? 'SCAN COMPLETE' : 'PARTIAL RESULTS') : scanState.stage === 'failed' ? 'SCAN FAILED' : 'ANALYSIS IN PROGRESS'}
               </span>
               <h2 className="scan-stage-headline">{scanState.label}</h2>
             </div>
@@ -205,7 +206,7 @@ export const ScanProgress = () => {
               repoguard-scanner-agent // {repo.fullName}
             </div>
             <div className="terminal-badge text-mono">
-              {isScanning ? 'RUNNING' : scanState.stage === 'completed' ? 'EXIT CODE 0' : 'IDLE'}
+              {isScanning ? 'RUNNING' : scanState.stage === 'completed' ? 'FINISHED' : 'IDLE'}
             </div>
           </div>
 
@@ -221,7 +222,7 @@ export const ScanProgress = () => {
             )}
             {isScanning && (
               <div className="terminal-line terminal-cursor-line">
-                <span className="terminal-prompt">&gt;</span> Executing static analysis AST walkers...
+                <span className="terminal-prompt">&gt;</span> Waiting for backend scan status...
                 <span className="terminal-blinking-cursor">_</span>
               </div>
             )}
@@ -238,7 +239,7 @@ export const ScanProgress = () => {
               <div className="results-text">
                 <h3 className="results-title">Pipeline Analysis Complete</h3>
                 <p className="results-desc">
-                  Repository scan successfully analyzed the current branch. All findings have been indexed into the central security dashboard.
+                  {scanOutcome(scanResult?.status, scanResult?.scannerStatus) === 'success' ? 'Both scanners completed; returned findings are available in the dashboard.' : 'The scan finished with partial, skipped, unavailable, or fallback scanner results. Review the scanner statuses below.'}
                 </p>
               </div>
             </div>
@@ -253,12 +254,12 @@ export const ScanProgress = () => {
                 <span className="metric-lbl">Dependency Vulnerabilities</span>
               </div>
               <div className="result-metric-card">
-                <span className="metric-num">{scanResult?.durationSeconds || 3}s</span>
+                <span className="metric-num">{scanResult?.durationSeconds == null ? 'Unavailable' : `${scanResult.durationSeconds}s`}</span>
                 <span className="metric-lbl">Execution Duration</span>
               </div>
               <div className="result-metric-card">
                 <span className="metric-num text-mono text-secondary">
-                  {scanResult?.commitSha?.slice(0, 10) || 'head-latest'}
+                  {scanCommit(scanResult?.commitSha)}
                 </span>
                 <span className="metric-lbl">Commit Hash</span>
               </div>

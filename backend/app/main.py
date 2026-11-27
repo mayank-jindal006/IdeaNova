@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from sqlalchemy import text
 
 from app.api.router import api_router
 from app.routers import findings as compatibility_findings, repositories as compatibility_repositories
@@ -44,6 +45,16 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     def health() -> dict[str, str]:
+        return {"status": "ok"}
+
+    @app.get("/health/database")
+    def database_health() -> dict[str, str]:
+        from app.db.session import engine
+        try:
+            with engine.connect() as connection:
+                connection.execute(text("SELECT 1"))
+        except Exception:
+            raise HTTPException(status_code=503, detail="Database is unavailable") from None
         return {"status": "ok"}
 
     @app.exception_handler(HTTPException)

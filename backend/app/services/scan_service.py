@@ -3,18 +3,21 @@ from __future__ import annotations
 import hashlib
 import shutil
 import subprocess
+import os
 from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.compliance.score import compute_compliance, map_controls
-from app.db.models import Finding, FindingStatus, Repo, RepoScore, Scan, ScanStatus, ScanTrigger
+from app.db.models import Finding, Repo, RepoScore, Scan, ScanStatus, ScanTrigger, User
 from app.github_client.client import clone_repo, repo_signals
 from app.risk.heuristic import compute_risk
 from app.scanners.deps import scan_dependencies_with_status
 from app.scanners.secrets import secret_scan_to_persistence
 from app.services.gitleaks import scan_repository_secrets
+from app.services.audit import record_audit_event
+from app.core.scan_paths import validate_scan_path
 
 
 def _fingerprint(finding: dict) -> str:
@@ -29,6 +32,7 @@ def run_scan(db: Session, scan_id: int) -> None:
     scan.status, scan.started_at = ScanStatus.running, datetime.now(timezone.utc)
     db.commit()
     repo_path: str | None = None
+    disposable_checkout = False
     try:
         repo = db.get(Repo, scan.repo_id)
         if not repo:
@@ -37,7 +41,16 @@ def run_scan(db: Session, scan_id: int) -> None:
         pushed_ref = scan.ref if scan.trigger == ScanTrigger.push else None
         if scan.trigger == ScanTrigger.push and (not pushed_commit or not pushed_ref):
             raise RuntimeError("Push scan is missing its validated ref or commit")
-        repo_path = clone_repo(repo.full_name, commit_sha=pushed_commit, ref=pushed_ref)
+        if repo.local_path:
+            if os.getenv("REPOGUARD_LOCAL_SCAN_ENABLED", "").lower() != "true" or scan.trigger != ScanTrigger.manual:
+                raise RuntimeError("Local scanning is unavailable")
+            checkout = validate_scan_path(repo.local_path)
+            if not (checkout / ".git").is_dir() or (checkout / ".git").is_symlink() or (checkout / ".git").is_junction():
+                raise RuntimeError("Local repository is unavailable")
+            repo_path = str(checkout)
+        else:
+            repo_path = clone_repo(repo.full_name, commit_sha=pushed_commit, ref=pushed_ref)
+            disposable_checkout = True
         scanned_commit = subprocess.run(
             ["git", "-C", repo_path, "rev-parse", "HEAD"],
             capture_output=True,
@@ -70,19 +83,39 @@ def run_scan(db: Session, scan_id: int) -> None:
         for payload in findings:
             payload["owasp_ids"], payload["asvs_ids"] = map_controls(payload)
             fingerprint = _fingerprint(payload)
-            existing = db.scalar(select(Finding).where(Finding.repo_id == repo.id, Finding.fingerprint == fingerprint))
+            existing = db.scalar(
+                select(Finding).where(
+                    Finding.scan_id == scan.id,
+                    Finding.fingerprint == fingerprint,
+                )
+            )
             if existing:
-                existing.scan_id = scan.id
-                if existing.status != FindingStatus.false_positive:
-                    existing.status = FindingStatus.needs_rotation if existing.type.value == "secret" else FindingStatus.open
+                for key, value in payload.items():
+                    if key not in {"status", "secret_hash"}:
+                        setattr(existing, key, value)
                 continue
             db.add(Finding(scan_id=scan.id, repo_id=repo.id, fingerprint=fingerprint, **payload))
         db.flush()
-        finding_dicts = [_finding_dict(finding) for finding in db.scalars(select(Finding).where(Finding.repo_id == repo.id)).all()]
+        finding_dicts = [_finding_dict(finding) for finding in db.scalars(select(Finding).where(Finding.scan_id == scan.id)).all()]
         compliance = compute_compliance(finding_dicts)
         risk = compute_risk(signals, finding_dicts)
-        db.add(RepoScore(repo_id=repo.id, scan_id=scan.id, compliance_score=compliance["score"], control_results=compliance["control_results"], risk_score=risk["score"], risk_factors=risk["factors"]))
+        score = db.scalar(select(RepoScore).where(RepoScore.scan_id == scan.id))
+        if score:
+            score.compliance_score = compliance["score"]
+            score.control_results = compliance["control_results"]
+            score.risk_score = risk["score"]
+            score.risk_factors = risk["factors"]
+        else:
+            db.add(RepoScore(repo_id=repo.id, scan_id=scan.id, compliance_score=compliance["score"], control_results=compliance["control_results"], risk_score=risk["score"], risk_factors=risk["factors"]))
         scan.status, scan.finished_at, repo.last_scanned_at = ScanStatus.done, datetime.now(timezone.utc), datetime.now(timezone.utc)
+        actor = db.get(User, scan.requested_by_user_id) if scan.requested_by_user_id else None
+        record_audit_event(
+            db,
+            actor,
+            "scan.completed",
+            repo_id=repo.id,
+            details={"scan_id": scan.id, "finding_count": len(finding_dicts)},
+        )
         db.commit()
     except Exception:
         db.rollback()
@@ -91,9 +124,18 @@ def run_scan(db: Session, scan_id: int) -> None:
             # Exceptions from clone/scanner subprocesses can contain a credential-bearing
             # clone URL or source content. Persist only a safe, stable failure message.
             scan.status, scan.error, scan.finished_at = ScanStatus.failed, "Repository scan failed", datetime.now(timezone.utc)
+            repo = db.get(Repo, scan.repo_id)
+            actor = db.get(User, scan.requested_by_user_id) if scan.requested_by_user_id else None
+            record_audit_event(
+                db,
+                actor,
+                "scan.failed",
+                repo_id=repo.id if repo else None,
+                details={"scan_id": scan.id, "reason": "scan_failed"},
+            )
             db.commit()
     finally:
-        if repo_path:
+        if repo_path and disposable_checkout:
             shutil.rmtree(repo_path, ignore_errors=True)
 
 
@@ -108,6 +150,7 @@ def _dependency_findings_for_persistence(findings: list[dict]) -> list[dict]:
         "scanner": finding["scanner"],
         "rule_id": finding["rule_id"],
         "title": finding["description"],
+        "description": finding["description"],
         "severity": finding["severity"],
         "file_path": finding["file"],
         "line": finding["line"],

@@ -6,6 +6,7 @@ export const AddRepoModal = ({ isOpen, onClose, onRepoAdded }) => {
   const { addRepository } = useRepoGuard();
 
   const [fullName, setFullName] = useState('');
+  const [local, setLocal] = useState(false);
   const [defaultBranch, setDefaultBranch] = useState('main');
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -13,6 +14,7 @@ export const AddRepoModal = ({ isOpen, onClose, onRepoAdded }) => {
   useEffect(() => {
     if (isOpen) {
       setFullName('');
+      setLocal(false);
       setDefaultBranch('main');
       setError('');
       setSubmitting(false);
@@ -42,13 +44,13 @@ export const AddRepoModal = ({ isOpen, onClose, onRepoAdded }) => {
       return;
     }
 
-    if (!trimmed.includes('/') || trimmed.split('/').length !== 2 || !trimmed.split('/')[0] || !trimmed.split('/')[1]) {
+    if (!local && (!trimmed.includes('/') || trimmed.split('/').length !== 2 || !trimmed.split('/')[0] || !trimmed.split('/')[1])) {
       setError("Repository must follow 'owner/repository' format (e.g. organization/repo-name).");
       return;
     }
     setSubmitting(true);
     try {
-      const created = await addRepository(trimmed, defaultBranch);
+      const created = await addRepository(trimmed, defaultBranch, local);
       onRepoAdded?.(created);
       onClose();
     } catch (err) {
@@ -64,7 +66,7 @@ export const AddRepoModal = ({ isOpen, onClose, onRepoAdded }) => {
         <div className="modal-header">
           <div className="modal-header-titles">
             <h2 id="modal-title" className="modal-title">Track New Repository</h2>
-            <p className="modal-subtitle">Connect a GitHub repository for secret scanning and dependency auditing.</p>
+            <p className="modal-subtitle">Register a GitHub or permitted local repository for security scanning.</p>
           </div>
           <button className="modal-close-btn" onClick={onClose} aria-label="Close dialog">
             <XIcon size={16} />
@@ -79,14 +81,22 @@ export const AddRepoModal = ({ isOpen, onClose, onRepoAdded }) => {
           )}
 
           <div className="form-group">
+            <label htmlFor="repo-source" className="form-label">Repository source</label>
+            <select id="repo-source" className="form-input" value={local ? 'local' : 'github'} onChange={(e) => { setLocal(e.target.value === 'local'); setFullName(''); setError(''); }}>
+              <option value="github">GitHub</option>
+              <option value="local">Permitted local repository</option>
+            </select>
+          </div>
+
+          <div className="form-group">
             <label htmlFor="repo-full-name" className="form-label">
-              GitHub Repository Name <span className="text-danger">*</span>
+              {local ? 'Local Repository Path' : 'GitHub Repository Name'} <span className="text-danger">*</span>
             </label>
             <input
               id="repo-full-name"
               type="text"
               className="form-input text-mono"
-              placeholder="e.g. repoguard-org/payment-service"
+              placeholder={local ? 'Path within the configured scan root' : 'e.g. repoguard-org/payment-service'}
               value={fullName}
               onChange={(e) => {
                 setFullName(e.target.value);
@@ -95,10 +105,10 @@ export const AddRepoModal = ({ isOpen, onClose, onRepoAdded }) => {
               autoFocus
               required
             />
-            <span className="form-hint">Specify the GitHub owner organization and repository name.</span>
+            <span className="form-hint">{local ? 'Local scanning must be enabled by the server administrator.' : 'Specify the GitHub owner organization and repository name.'}</span>
           </div>
 
-          <div className="form-group">
+          {!local && <div className="form-group">
             <label htmlFor="repo-branch" className="form-label">
               Default Monitored Branch
             </label>
@@ -111,7 +121,7 @@ export const AddRepoModal = ({ isOpen, onClose, onRepoAdded }) => {
               onChange={(e) => setDefaultBranch(e.target.value)}
             />
             <span className="form-hint">Target branch for push webhooks and HEAD secret inspection.</span>
-          </div>
+          </div>}
 
           <div className="modal-footer">
             <button type="button" className="btn-secondary" onClick={onClose} disabled={submitting}>

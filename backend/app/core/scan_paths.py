@@ -45,7 +45,7 @@ def validate_scan_path(repo_path: str | Path) -> Path:
             current_path = Path(current)
             for name in (*directories, *filenames):
                 entry = current_path / name
-                if entry.is_symlink() and not entry.resolve(strict=False).is_relative_to(checkout):
+                if (entry.is_symlink() or entry.is_junction()) and not entry.resolve(strict=False).is_relative_to(checkout):
                     raise ScanPathError("Repository checkout contains an unsafe symbolic link")
     except (OSError, RuntimeError):
         raise ScanPathError("Repository checkout could not be validated") from None

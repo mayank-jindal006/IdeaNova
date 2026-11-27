@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ContractModel(BaseModel):
@@ -13,8 +13,15 @@ class ContractModel(BaseModel):
 class RepoCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    full_name: str = Field(pattern=r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?/[A-Za-z0-9_.-]+$")
+    full_name: str | None = Field(default=None, pattern=r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?/[A-Za-z0-9_.-]+$")
+    local_path: str | None = Field(default=None, min_length=1, max_length=4096)
     default_branch: str | None = Field(default=None, max_length=255)
+
+    @model_validator(mode="after")
+    def exactly_one_source(self):
+        if bool(self.full_name) == bool(self.local_path):
+            raise ValueError("Specify exactly one repository source")
+        return self
 
 
 class AuthCredentials(BaseModel):
@@ -50,6 +57,7 @@ class ExplainFindingRequest(BaseModel):
 class RepoOut(ContractModel):
     id: int
     full_name: str
+    source_type: Literal["local", "github"] = "github"
     default_branch: str
     created_at: datetime
     last_scanned_at: datetime | None
@@ -73,6 +81,7 @@ class FindingOut(ContractModel):
     type: Literal["secret", "dependency"]
     rule_id: str
     title: str
+    description: str | None = None
     severity: Literal["critical", "high", "medium", "low"] | None
     scanner: str
     file_path: str | None
@@ -112,14 +121,64 @@ class FixValidation(BaseModel):
     secret_removed: bool
     syntax_ok: bool
     notes: list[str]
+    patch_syntax: Literal["passed", "failed", "not_run"] = "not_run"
+    target_exists: bool | None = None
+    tests: Literal["not_run", "passed", "failed"] = "not_run"
+    security_rescan: Literal["not_run", "passed", "failed"] = "not_run"
 
 
 class FixOut(BaseModel):
+    id: int
     finding_id: int
     explanation: FixExplanation
     edits: list[FixEdit]
     tier: Literal["auto_branch", "pr_review", "flag_only"]
     validation: FixValidation
+    patch: str | None = None
+    target_file: str | None = None
+    risk_level: Literal["low", "medium", "high", "critical"] | None = None
+    model: str | None = None
+    pr_url: str | None = None
+    pr_number: int | None = None
+    status: Literal[
+        "generated",
+        "pending_review",
+        "approved",
+        "applied",
+        "validation_passed",
+        "validation_failed",
+        "pr_opened",
+        "merged",
+        "rejected",
+    ] = "generated"
+    created_at: datetime | None = None
+
+
+class FixReviewCreate(BaseModel):
+    decision: Literal["approved", "rejected"]
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class FixReviewOut(ContractModel):
+    id: int
+    fix_id: int
+    reviewer_id: int | None
+    reviewer_email: str
+    decision: Literal["approved", "rejected"]
+    note: str | None
+    created_at: datetime
+
+
+class AuditLogOut(ContractModel):
+    id: int
+    user_id: int | None
+    actor_email: str | None
+    repo_id: int | None
+    finding_id: int | None
+    fix_id: int | None
+    action: str
+    details: dict
+    created_at: datetime
 
 
 class OpenPrOut(BaseModel):
@@ -138,4 +197,4 @@ class ScanHistoryOut(ScanOut):
 
 class FeedbackCreate(BaseModel):
     verdict: Literal["true_positive", "false_positive"]
-    note: str | None = None
+    note: str | None = Field(default=None, max_length=2000)

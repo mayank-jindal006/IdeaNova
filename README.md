@@ -1,23 +1,31 @@
 # RepoGuard
 
-RepoGuard is an AI-powered repository security dashboard for secret detection, dependency risk review, and developer-friendly remediation guidance.
+RepoGuard is an authenticated repository security dashboard for secret
+detection, dependency risk review, persisted scan history, and human-reviewed
+AI-assisted remediation.
 
 ## Overview
 
 The stack combines:
 
-- a React + Vite dashboard for repository and finding visibility
-- a FastAPI backend for repository scanning and AI explanation
+- an authenticated React + Vite dashboard for repositories, findings, scan
+  history, remediation review, and security activity
+- a FastAPI backend for tenant-scoped repository scanning, persistence, and AI
+  explanations/proposals
 - Gitleaks-compatible scanning and report normalization
 - secret redaction before any content reaches the LLM
-- Gemini-backed remediation suggestions and risk summaries
+- Gemini-backed remediation proposals with explicit approval and validation
+  gates, plus safe rule-based fallback guidance
 
 ## Architecture
 
-Frontend -> API -> Repo scan service -> Gitleaks/regex scanning -> AI summarization
+Frontend -> authenticated API -> PostgreSQL -> isolated scan/fix checkout
+                               -> Gitleaks + OSV -> Gemini guidance/proposals
 
-- Frontend: [src](src) provides repository, dashboard, and finding views.
-- Backend: [backend/app](backend/app) exposes secure scan and explanation routes.
+- Frontend: [src](src) provides authenticated repository, dashboard, finding,
+  remediation review, and audit history views.
+- Backend: [backend/app](backend/app) exposes tenant-scoped scan, history,
+  finding, review, audit, and GitHub integration routes.
 - Scan engine: [backend/app/services/gitleaks.py](backend/app/services/gitleaks.py) executes Gitleaks JSON reports when available and labels regex-only results as a fallback.
 - Dependency engine: [backend/app/scanners/deps.py](backend/app/scanners/deps.py) discovers resolved npm/Python dependencies and queries the OSV QueryBatch API.
 - Redaction: [backend/app/ai/redaction.py](backend/app/ai/redaction.py) masks variable-length secrets using exact line/column boundaries when available.
@@ -36,8 +44,12 @@ Frontend -> API -> Repo scan service -> Gitleaks/regex scanning -> AI summarizat
 ## Backend endpoints
 
 - GET /health
-- POST /api/repositories/scan
-- POST /api/findings/explain
+- POST /api/auth/register and POST /api/auth/login
+- GET /api/repos and POST /api/repos/{repo_id}/scan
+- GET /api/repos/{repo_id}/scans and GET /api/scans/{scan_id}/findings
+- POST /api/findings/{finding_id}/explain and POST /api/findings/{finding_id}/fix
+- POST /api/fixes/{fix_id}/review, /validate, and /open-pr
+- GET /api/audit-logs
 
 Interactive API documentation is available while the backend is running:
 
@@ -67,16 +79,63 @@ PowerShell: `$env:REPOGUARD_SCAN_ROOT = "D:\RepoGuardScans"`). The configured
 directory must already exist and must not be writable by untrusted users.
 
 The backend fails closed for scans when `REPOGUARD_SCAN_ROOT` is missing or
-unavailable. Repository registration accepts a GitHub `owner/repository` name,
-not a client filesystem path. The backend clones repositories into temporary
+unavailable. GitHub repository registration accepts an `owner/repository` name.
+The backend clones GitHub repositories into temporary
 directories below the configured root, rejects canonical paths or symlinks
 that escape it, and removes clones after scanning. Keep this directory
 operator-managed and do not share it with untrusted writers.
 
+For a trusted single-user development installation, local Git repositories can
+also be registered from the repository dialog. Set `REPOGUARD_LOCAL_SCAN_ENABLED`
+to `true` and place the repository inside the existing `REPOGUARD_SCAN_ROOT`.
+Every authenticated user of that server can request scanning of repositories
+within that root, so do not enable this mode on a shared or public service.
+The backend validates paths again at scan time and never removes a local checkout.
+
+For a fresh local SQLite database, set `DATABASE_URL` to a SQLite URL and run
+`$env:PYTHONPATH = 'backend'; .\.venv-py313\Scripts\python.exe -m alembic -c backend\alembic.ini upgrade head`
+from the repository root. Back up an existing database before applying migrations.
+The existing PostgreSQL database configuration remains supported. Database
+connectivity can be checked at `/health/database`.
+
 ## Test and validation
 
-- Backend tests: pytest -q backend/tests
+- Backend tests (Python 3.13 environment): `Set-Location backend; python -m pytest -q tests`
 - Frontend build: npm run build
+- Frontend lint: npm run lint
+- Database migration: `alembic upgrade head` from `backend/` with the
+  deployment database configured. Migration `0007` adds per-scan finding
+  history, fix reviews, AI-request metadata, and audit records.
+
+## Persisted remediation lifecycle
+
+The authenticated UI creates a database-backed, single-file remediation
+proposal and shows its generated patch for review. A user must explicitly
+approve or reject it. Only an approved proposal can be validated in a
+disposable checkout; RepoGuard does not execute repository-provided test
+commands. Opening a GitHub pull request requires a successful security rescan,
+an unchanged source hash, and the explicit approval. The resulting pull request
+is a real external review request and is never merged automatically.
+
+For local repositories, proposal generation is limited to an exact-pinned
+`requirements.txt` entry when OSV supplied a fixed version. The complete
+manifest must contain only supported exact pins; the generated replacement is
+checked against the single advisory-backed change. Dependency compatibility is
+not established by that check. After explicit approval, validation copies the
+repository into a temporary workspace and compares Gitleaks working-tree and
+OSV results before and after the proposal. Repository test commands are not
+run. A passing security rescan does not mark the original finding resolved or
+apply the patch to the original repository; local patch application is not
+implemented. Secret findings remain guidance-only and require rotation.
+Local approvals created after migration `0009` are bound to the exact proposal
+and source hash. Older local approvals without this digest cannot be validated;
+generate and review a new proposal. The original-file apply action remains
+disabled because atomic replacement alone does not prevent concurrent edits.
+Approved and security-validated local exact-pin proposals may be downloaded as
+a patch and integrity manifest for manual review; see [manual patch export](docs/MANUAL_PATCH_EXPORT.md).
+
+The separate [`backend-node/`](backend-node) Commerce application is not part
+of the RepoGuard security API or its authentication boundary.
 
 ## Scanner prerequisites
 

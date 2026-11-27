@@ -23,6 +23,7 @@ def test_persistent_repository_scan_findings_and_dashboard_contracts():
     db.add(user); db.commit()
     repo = create_repo(RepoCreate(full_name="owner/repo", default_branch="main"), db, user)
     assert repo.full_name == "owner/repo"
+    assert repo.source_type == "github"
     assert list_repos(db, user)[0]["id"] == repo.id
     assert get_repo(repo.id, db, user)["repo"]["default_branch"] == "main"
 

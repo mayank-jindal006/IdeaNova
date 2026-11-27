@@ -5,6 +5,8 @@ Every AI feature (explain, fix) calls complete_json() from this file.
 import json
 import re
 import time
+from dataclasses import dataclass
+from typing import Any
 
 from app.settings import settings
 
@@ -39,7 +41,25 @@ class LLMError(Exception):
         self.category = category
         self.status_code = status_code
 
-def _call_gemini(system: str, user: str) -> str:
+
+@dataclass(frozen=True, slots=True)
+class ProviderResponse:
+    text: str
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+
+
+def _token_count(usage: Any, *names: str) -> int | None:
+    if usage is None:
+        return None
+    for name in names:
+        value = usage.get(name) if isinstance(usage, dict) else getattr(usage, name, None)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            return value
+    return None
+
+
+def _call_gemini(system: str, user: str, response_schema: dict[str, Any]) -> ProviderResponse:
     from google import genai
     from google.genai import types
 
@@ -54,13 +74,18 @@ def _call_gemini(system: str, user: str) -> str:
             system_instruction=system,
             temperature=0.1,
             response_mime_type="application/json",
-            response_json_schema=GUIDANCE_RESPONSE_SCHEMA,
+            response_json_schema=response_schema,
         ),
     )
-    return response.text or ""
+    usage = getattr(response, "usage_metadata", None)
+    return ProviderResponse(
+        text=response.text or "",
+        input_tokens=_token_count(usage, "prompt_token_count", "promptTokenCount"),
+        output_tokens=_token_count(usage, "candidates_token_count", "candidatesTokenCount"),
+    )
 
 
-def _call_openai_compatible(system: str, user: str) -> str:
+def _call_openai_compatible(system: str, user: str, _response_schema: dict[str, Any]) -> ProviderResponse:
     """Used for the Groq backup (and OpenAI if ever needed)."""
     from openai import OpenAI
 
@@ -74,7 +99,12 @@ def _call_openai_compatible(system: str, user: str) -> str:
             {"role": "user", "content": user},
         ],
     )
-    return response.choices[0].message.content or ""
+    usage = getattr(response, "usage", None)
+    return ProviderResponse(
+        text=response.choices[0].message.content or "",
+        input_tokens=_token_count(usage, "prompt_tokens"),
+        output_tokens=_token_count(usage, "completion_tokens"),
+    )
 
 
 _CALLERS = {
@@ -132,8 +162,13 @@ def _provider_error_category(error: Exception) -> tuple[str, int | None]:
 
 
 
-def complete_json(system: str, user: str, retries: int = 2) -> dict:
-    """Ask the LLM and return its reply as a dict. Retries on bad JSON and network/rate-limit errors."""
+def complete_json_with_metadata(
+    system: str,
+    user: str,
+    retries: int = 2,
+    response_schema: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], ProviderResponse]:
+    """Return structured output and provider usage metadata without logging prompts."""
     if not settings.llm_api_key or not settings.llm_model:
         raise LLMError("LLM provider configuration is missing", category="missing_configuration")
 
@@ -141,13 +176,16 @@ def complete_json(system: str, user: str, retries: int = 2) -> dict:
     if caller is None:
         raise LLMError("LLM provider is not supported", category="invalid_provider")
 
+    schema = response_schema or GUIDANCE_RESPONSE_SCHEMA
     last_error = None
     last_category = "provider_error"
     last_status_code = None
+    last_response = ProviderResponse("")
     for attempt in range(retries + 1):
         try:
-            raw = caller(system, user)
-            return extract_json(raw)
+            raw = caller(system, user, schema)
+            last_response = raw if isinstance(raw, ProviderResponse) else ProviderResponse(str(raw))
+            return extract_json(last_response.text), last_response
         except json.JSONDecodeError as e:
             last_error = e
             last_category = "malformed_response"
@@ -165,3 +203,18 @@ def complete_json(system: str, user: str, retries: int = 2) -> dict:
         category=last_category,
         status_code=last_status_code,
     ) from last_error
+
+
+def complete_json(system: str, user: str, retries: int = 2) -> dict:
+    """Ask the configured provider for a validated JSON object."""
+    result, _ = complete_json_with_metadata(system, user, retries)
+    return result
+
+
+__all__ = [
+    "GUIDANCE_RESPONSE_SCHEMA",
+    "LLMError",
+    "ProviderResponse",
+    "complete_json",
+    "complete_json_with_metadata",
+]

@@ -1,26 +1,24 @@
 # RepoGuard API Contracts
 
 This document is the canonical description of the current RepoGuard security
-application contract. It records implemented behavior and known transitional
-gaps; it does not imply that every listed capability is connected to the React
-dashboard.
+application contract, including the authenticated React workflows, persistent
+scan history, AI-assisted remediation review, and known validation limits.
 
 ## Ownership and architecture
 
 | Component | Owner | Contractual responsibility |
 | --- | --- | --- |
-| `src/` | React + Vite | UI state, rendering, and compatibility scan/guidance clients. |
+| `src/` | React + Vite | Authenticated repository, finding, scan, remediation review, and audit UI. |
 | `backend/app/` | FastAPI | Security APIs, scan orchestration, persistence, AI guidance, and GitHub integration. |
-| PostgreSQL | FastAPI + Alembic | Durable repositories, scans, findings, fixes, feedback, and scores. |
+| PostgreSQL | FastAPI + Alembic | Durable repositories, per-scan findings, fixes, reviews, AI request metadata, audit events, and scores. |
 | Gitleaks | `app.services.gitleaks` | Canonical secret scanner execution and fallback labeling. |
 | OSV | `app.scanners.deps` | Canonical dependency discovery and vulnerability normalization. |
 | Gemini | `app.ai.llm` + `app.services.ai_service` | Structured security guidance with a rule-based fallback. |
 | GitHub | `app.github_client` | Repository metadata, clone, webhook verification, branches, commits, and PRs. |
 | `backend-node/` | Separate Express Commerce application | Commerce authentication, products, and orders. It is not part of the security API contract. |
 
-The frontend currently consumes the compatibility routes below and keeps
-dashboard data in browser localStorage. The database-backed route family is
-implemented but is not yet the frontend's source of truth.
+The authenticated frontend uses the database-backed API as its source of
+truth. The compatibility routes remain available to existing integrations.
 
 ## Base paths and endpoints
 
@@ -33,10 +31,10 @@ sessionStorage (not localStorage) and sends it in the Authorization header;
 closing the browser session requires sign-in again. There is no refresh token
 or production SSO integration yet.
 
-All repository, scan, finding, fix, dashboard, compatibility scan, and
+All repository, scan, finding, fix, dashboard, audit, compatibility scan, and
 guidance routes require a verified bearer token. Repositories are owned by a
-user; scans, findings, fixes, feedback, and scores inherit ownership through
-their repository. Cross-tenant access returns 404. Existing unowned records
+user; scans, findings, fixes, reviews, feedback, and scores inherit ownership
+through their repository. Cross-tenant access returns 404. Existing unowned records
 remain inaccessible until an administrator assigns their `repos.owner_id`
 through a controlled database operation; they are never adopted automatically.
 
@@ -111,16 +109,21 @@ returns guidance only; it does not generate a patch, validation result, or PR.
 | `POST` | `/api/repos/{repo_id}/scan` | Queue a background clone-and-scan job. |
 | `GET` | `/api/repos/{repo_id}/findings` | Persisted findings with optional filters. |
 | `GET` | `/api/findings/{finding_id}` | Persisted finding, latest fix, and rotation checklist. |
-| `POST` | `/api/findings/{finding_id}/fix` | Generate/persist a fix record. See lifecycle limitations below. |
+| `POST` | `/api/findings/{finding_id}/explain` | Generate and log redaction-safe persisted-finding guidance. |
+| `POST` | `/api/findings/{finding_id}/fix` | Generate and persist a review-only single-file proposal. |
 | `POST` | `/api/findings/{finding_id}/feedback` | Record feedback; false-positive feedback changes finding status. |
+| `GET` | `/api/fixes/{fix_id}` | Read an owned persisted proposal and its review history. |
+| `POST` | `/api/fixes/{fix_id}/review` | Record an explicit approval or rejection. |
+| `POST` | `/api/fixes/{fix_id}/validate` | Validate an approved proposal in a disposable checkout. |
 | `POST` | `/api/fixes/{fix_id}/open-pr` | Create a GitHub branch, commit edits, and open a PR. |
+| `GET` | `/api/audit-logs` | List tenant-scoped security activity. |
 | `GET` | `/api/scans/{scan_id}` | Persisted scan state. |
 | `GET` | `/api/scans/{scan_id}/findings` | Persisted findings belonging to one scan. |
 | `GET` | `/api/dashboard/summary` | Persisted aggregate summary. |
 | `POST` | `/api/webhooks/github` | Verify GitHub push webhook and queue a scan for tracked repositories. |
 
 All database-backed routes require a verified bearer token and scope
-repository-derived data to the authenticated owner. The GitHub webhook route
+repository-derived data and audit events to the authenticated owner. The GitHub webhook route
 is the exception: it uses a valid `X-Hub-Signature-256` signature instead of a
 user token.
 
@@ -252,14 +255,43 @@ described as Gemini-generated.
 ## Fix, validation, and GitHub PR lifecycle
 
 The compatibility guidance endpoint does not create code changes. The
-database-backed fix endpoint can persist generated edits and validation fields,
-then `POST /api/fixes/{fix_id}/open-pr` can create a GitHub branch, commit, and
-PR only after an explicit request.
+database-backed fix endpoint proposes one existing repository file. The
+backend chooses and validates the target path, redacts source context before
+the provider call, constructs the diff itself, and persists the patch as
+`pending_review`; it never writes generated content to the source repository.
+Secret findings receive rotation/removal guidance only; their source is not
+sent to the model and no patch is generated. For other findings, source is
+shared only after a successful Gitleaks scan and matching secret lines are
+redacted. If Gitleaks is unavailable or incomplete, source context fails
+closed and no patch is offered.
+Unsupported syntax types, unsafe paths, oversized files, malformed responses,
+or unavailable source context result in guidance without a patch.
 
-Current limitation: generated-fix validation is not yet a complete verified
-patch-validation pipeline. Consumers must not report a patch as generated,
-validated, or submitted as a PR unless the respective persisted fields and
-GitHub response confirm it.
+The state progression requires separate user actions:
+
+1. `POST /api/findings/{finding_id}/fix` creates a persisted proposal.
+2. `POST /api/fixes/{fix_id}/review` records an explicit approval or rejection.
+   Approval requires a present patch and safe target/patch checks.
+3. `POST /api/fixes/{fix_id}/validate` is available only after approval. It
+   checks the source hash, applies the change in a disposable clone, runs the
+   relevant Gitleaks/OSV scans, and records the result. Repository-provided
+   tests or commands are deliberately not executed.
+4. `POST /api/fixes/{fix_id}/open-pr` requires the latest review to be
+   approved, a successful validation, one target file, and an unchanged base
+   hash. The operation opens a real GitHub PR; RepoGuard does not merge it.
+
+`validation_passed` means only that the supported syntax and security-rescan
+gates passed in the disposable checkout; it does not certify application
+correctness or replace the repository's own test suite. AI usage metadata and
+safe lifecycle events are stored separately from source context and raw
+credentials. Risk ranking is deterministic and reports its evidence; it does
+not claim reachability or exploitability.
+
+Migration `0007_reviews_audit_and_scan_findings` makes findings unique per
+scan so older scans remain queryable, and adds review, AI-request, and audit
+records. Apply it with the normal Alembic deployment procedure before enabling
+the new endpoints. A live PostgreSQL migration must be validated in the
+deployment environment; local SQLite tests do not substitute for that check.
 
 GitHub requires `GITHUB_TOKEN`; webhook verification also requires
 `GITHUB_WEBHOOK_SECRET`. Clone/PR failures must be sanitized before storage or

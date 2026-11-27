@@ -6,9 +6,12 @@
   "scripts": {
     "dev": "vite",
     "dev:backend": "python backend/main.py",
+    "dev:commerce": "npm --prefix backend-node run dev",
+    "dev:all": "powershell -ExecutionPolicy Bypass -File ./scripts/run-dev.ps1",
     "build": "vite build",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:e2e": "playwright test --config=e2e/playwright.config.js"
   },
   "dependencies": {
     "react": "^19.2.8",
@@ -16,10 +19,11 @@
     "react-router-dom": "^7.18.2"
   },
   "devDependencies": {
+    "@playwright/test": "^1.65.1",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.4",
     "oxlint": "^1.75.0",
-    "vite": "^8.2.0"
+    "vite": "8.2.4"
   }
 }

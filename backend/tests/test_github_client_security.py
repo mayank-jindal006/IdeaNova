@@ -1,6 +1,8 @@
 from dataclasses import replace
+from base64 import b64decode
 from pathlib import Path
 import subprocess
+from unittest.mock import Mock
 
 import pytest
 
@@ -8,6 +10,17 @@ from app.core import scan_paths
 from app.core.config import settings as scan_settings
 from app.github_client import client
 from app.settings import settings as runtime_settings
+
+
+def test_branch_creation_rejects_moved_base(monkeypatch):
+    repo = Mock()
+    repo.get_branch.return_value.commit.sha = 'b' * 40
+    github = Mock()
+    github.get_repo.return_value = repo
+    monkeypatch.setattr(client, '_github', lambda: github)
+    with pytest.raises(ValueError, match='Base branch changed'):
+        client.create_branch('owner/repo', 'repoguard/fix-1', 'main', base_sha='a' * 40)
+    repo.create_git_ref.assert_not_called()
 
 
 def test_clone_uses_process_scoped_credentials_without_persisting_them(tmp_path, monkeypatch, caplog):
@@ -39,7 +52,9 @@ def test_clone_uses_process_scoped_credentials_without_persisting_them(tmp_path,
     assert checkout.is_relative_to(root.resolve())
     assert len(commands) == 4
     assert all(token not in " ".join(command) for command in commands)
-    assert all(environment["REPOGUARD_GIT_TOKEN"] == token for environment in environments[:2])
+    assert all("REPOGUARD_GIT_TOKEN" not in environment for environment in environments[:2])
+    assert all(environment["GIT_CONFIG_KEY_1"] == "http.https://github.com/.extraheader" for environment in environments[:2])
+    assert all(token not in environment["GIT_CONFIG_VALUE_1"] for environment in environments[:2])
     assert all("GIT_TRACE" not in environment for environment in environments[:2])
     assert environments[2:] == [None, None]
     assert all(token not in value for value in environments[0].values() if value != token)
@@ -51,21 +66,43 @@ def test_clone_uses_process_scoped_credentials_without_persisting_them(tmp_path,
     assert list(root.iterdir()) == [checkout]
 
 
-def test_git_credential_helper_supplies_token_only_to_git_credential_lookup():
+def test_git_auth_header_is_scoped_to_the_git_child_process():
     token = "github-token-used-only-by-test-child-process"
     environment = client._git_auth_environment(token)
 
     result = subprocess.run(
-        ["git", "credential", "fill"],
-        input="protocol=https\nhost=github.com\n\n",
+        ["git", "config", "--get-all", "http.https://github.com/.extraheader"],
         capture_output=True,
         check=True,
         text=True,
         env=environment,
     )
 
-    credentials = dict(line.split("=", 1) for line in result.stdout.splitlines())
-    assert credentials == {"protocol": "https", "host": "github.com", "username": "x-access-token", "password": token}
+    header = result.stdout.strip()
+    assert header.startswith("AUTHORIZATION: basic ")
+    encoded_credentials = header.removeprefix("AUTHORIZATION: basic ")
+    assert b64decode(encoded_credentials).decode("utf-8") == f"x-access-token:{token}"
+    assert token not in " ".join([environment["GIT_CONFIG_KEY_1"], environment["GIT_CONFIG_VALUE_1"]])
+    assert environment["GIT_CONFIG_VALUE_0"] == ""
+
+
+@pytest.mark.parametrize("operation", ["approve", "reject"])
+def test_git_credential_operations_do_not_emit_process_scoped_credentials(operation, monkeypatch):
+    token = "github-token-used-only-by-test-child-process"
+    monkeypatch.setenv("GIT_TRACE", "1")
+    environment = client._git_auth_environment(token)
+    assert "GIT_TRACE" not in environment
+    result = subprocess.run(
+        ["git", "credential", operation],
+        input="protocol=https\nhost=github.com\nusername=x-access-token\npassword=dummy-input\n\n",
+        capture_output=True,
+        check=True,
+        text=True,
+        env=environment,
+        timeout=20,
+    )
+    assert not result.stdout
+    assert token not in result.stderr
 
 
 def test_clone_failure_removes_checkout_and_does_not_expose_token(tmp_path, monkeypatch, caplog):

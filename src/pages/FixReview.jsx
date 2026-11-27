@@ -1,56 +1,88 @@
-import React, { useRef, useState } from 'react';
-import { useParams, Link, useNavigate } from 'react-router-dom';
+import React, { useEffect, useState } from 'react';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useRepoGuard } from '../context/useRepoGuard';
 import Header from '../components/Header';
-import DiffViewer from '../components/DiffViewer';
 import SeverityBadge from '../components/SeverityBadge';
 import StatusChip from '../components/StatusChip';
-import RotationChecklist from '../components/RotationChecklist';
 import EmptyState from '../components/EmptyState';
-import {
-  DiffIcon,
-  CheckCircleIcon,
-  AlertTriangleIcon,
-  RefreshCwIcon,
-  FileCodeIcon
-} from '../components/icons';
+import { securityApi } from '../services/securityApi';
+import { exportAvailability } from '../services/exportPresentation';
+import { AlertTriangleIcon, CheckCircleIcon, RefreshCwIcon } from '../components/icons';
 
-const FALLBACK_GUIDANCE_MESSAGES = {
-  missing_configuration: 'Gemini is not configured on the server. Rule-based guidance is shown instead.',
-  invalid_provider: 'The configured AI provider is not supported. Rule-based guidance is shown instead.',
-  authentication_or_permission: 'Gemini authentication or permissions were rejected. Rule-based guidance is shown instead.',
-  model_or_endpoint: 'The configured Gemini model or service endpoint was unavailable. Rule-based guidance is shown instead.',
-  rate_limited: 'Gemini is temporarily rate limited. Rule-based guidance is shown instead.',
-  timeout: 'Gemini did not respond before the server timeout. Rule-based guidance is shown instead.',
-  network_or_connection: 'The server could not reach Gemini. Rule-based guidance is shown instead.',
-  malformed_response: 'Gemini returned incomplete guidance. Rule-based guidance is shown instead.',
-  provider_error: 'Gemini was unavailable. Rule-based guidance is shown instead.'
-};
-
-function fallbackGuidanceMessage(reason) {
-  return FALLBACK_GUIDANCE_MESSAGES[reason] || FALLBACK_GUIDANCE_MESSAGES.provider_error;
-}
+const formatStatus = (status) => (status || 'unknown').replaceAll('_', ' ');
 
 export const FixReview = () => {
   const { findingId } = useParams();
   const navigate = useNavigate();
-  const { findings, fixes, repositories, generateFix, openPullRequest } = useRepoGuard();
-
-  const finding = findings.find(f => f.id === findingId);
-  const repo = repositories.find(r => r.id === finding?.repoId);
-  const existingFix = fixes[findingId]?.source === 'api' ? fixes[findingId] : null;
-
-  const [genState, setGenState] = useState(existingFix ? 'generated' : 'idle'); // 'idle' | 'generating' | 'generated' | 'failed'
-  const [prState, setPrState] = useState(existingFix?.prNumber ? 'opened' : 'idle'); // 'idle' | 'opening' | 'opened' | 'failed'
+  const {
+    findings,
+    fixes,
+    repositories,
+    loadFix,
+    generateFix,
+    reviewFix,
+    validateFix,
+    openPullRequest
+  } = useRepoGuard();
+  const finding = findings.find((item) => item.id === findingId);
+  const repo = repositories.find((item) => item.id === finding?.repoId);
+  const fix = fixes[findingId];
+  const [loadingFix, setLoadingFix] = useState(true);
+  const [pendingAction, setPendingAction] = useState(null);
+  const [reviewNote, setReviewNote] = useState('');
   const [errorText, setErrorText] = useState(null);
-  const isGeneratingRef = useRef(false);
+  const [exportStatus, setExportStatus] = useState(null);
+  const [exportMessage, setExportMessage] = useState('');
+  const [prEligibility, setPrEligibility] = useState(null);
+
+  useEffect(() => {
+    let active = true;
+    setLoadingFix(true);
+    setErrorText(null);
+    loadFix(findingId)
+      .catch((error) => {
+        if (active) setErrorText(error.message || 'Unable to load the persisted remediation proposal.');
+      })
+      .finally(() => {
+        if (active) setLoadingFix(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [findingId, loadFix]);
+
+  useEffect(() => {
+    let active = true;
+    setExportStatus(null);
+    setExportMessage('');
+    if (fix?.id && repo?.sourceType === 'local') {
+      securityApi.patchExportStatus(fix.id)
+        .then((status) => {
+          if (!active) return;
+          setExportStatus(exportAvailability(status));
+        })
+        .catch(() => { if (active) setExportStatus({ eligible: false, reason: 'Unable to check export eligibility.' }); });
+    }
+    return () => { active = false; };
+  }, [fix?.id, fix?.status, repo?.sourceType]);
+
+  useEffect(() => {
+    let active = true;
+    setPrEligibility(null);
+    if (fix?.id && fix.status === 'validation_passed' && repo?.sourceType === 'github') {
+      securityApi.pullRequestEligibility(fix.id)
+        .then((status) => { if (active) setPrEligibility(status); })
+        .catch(() => { if (active) setPrEligibility({ eligible: false, reason: 'Unable to verify GitHub connection.' }); });
+    }
+    return () => { active = false; };
+  }, [fix?.id, fix?.status, repo?.sourceType]);
 
   if (!finding) {
     return (
       <div className="page-content-padded">
         <EmptyState
           title="Security Finding Not Found"
-          message={`Unable to locate finding with identifier "${findingId}".`}
+          message="The selected finding is not available in the current account."
           actionText="Back to Repositories"
           onAction={() => navigate('/repositories')}
         />
@@ -58,46 +90,43 @@ export const FixReview = () => {
     );
   }
 
-  // Handle fix generation
-  const handleGenerateFix = async () => {
-    if (isGeneratingRef.current) return;
-    isGeneratingRef.current = true;
-    setGenState('generating');
+  const runAction = async (action, callback) => {
+    setPendingAction(action);
     setErrorText(null);
     try {
-      await generateFix(finding.id);
-      setGenState('generated');
-    } catch (err) {
-      // Keep diagnostics useful without logging the finding payload or any secret material.
-      console.warn('RepoGuard AI guidance request failed', { message: err instanceof Error ? err.message : 'Unknown error' });
-      setGenState('failed');
-      setErrorText(err instanceof Error ? err.message : 'AI guidance could not be generated.');
+      await callback();
+    } catch (error) {
+      setErrorText(error.message || 'The remediation action could not be completed.');
     } finally {
-      isGeneratingRef.current = false;
+      setPendingAction(null);
     }
   };
 
-  // Handle opening pull request
-  const handleOpenPR = async () => {
-    if (prState === 'opening' || prState === 'opened') return;
-    setPrState('opening');
-    setErrorText(null);
+  const createProposal = () => runAction('generate', () => generateFix(findingId));
+  const submitReview = (decision) => runAction(decision, () => reviewFix(findingId, decision, reviewNote));
+  const validateProposal = () => runAction('validate', () => validateFix(findingId));
+  const createPullRequest = () => runAction('open-pr', () => openPullRequest(findingId));
+  const downloadPatch = () => runAction('export', async () => {
+    setExportMessage('');
+    const archive = await securityApi.exportPatch(fix.id);
+    const url = URL.createObjectURL(archive);
     try {
-      await openPullRequest(finding.id);
-      setPrState('opened');
-    } catch (err) {
-      setPrState('failed');
-      setErrorText(err.message || 'Failed to initialize pull request.');
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `repoguard-fix-${fix.id}.zip`;
+      link.click();
+    } finally {
+      URL.revokeObjectURL(url);
     }
-  };
-
-  const currentFix = fixes[findingId]?.source === 'api' ? fixes[findingId] : existingFix;
+    setExportMessage('Patch downloaded. It has not been applied; the original repository was not modified. Review it before manual application. Security validation does not mean repository tests passed.');
+  });
+  const validation = fix?.validation;
 
   return (
     <div className="fix-review-page">
       <Header
-        title={`Remediation Review: ${finding.title}`}
-        subtitle={`Repository: ${repo?.fullName || finding.repoId} • File: ${finding.filePath}`}
+        title="Remediation Review"
+        subtitle={`${finding.title} · ${repo?.fullName || finding.repoId}`}
         breadcrumbs={[
           { label: 'Repositories', path: '/repositories' },
           { label: repo?.name || finding.repoId, path: `/repositories/${finding.repoId}` },
@@ -106,280 +135,186 @@ export const FixReview = () => {
         ]}
         actions={
           <div className="header-action-group">
-            <Link to={`/findings/${finding.id}`} className="btn-secondary">
-              Back to Finding
-            </Link>
-
-            {/* Step 1: Generate Fix Button */}
+            <Link to={`/findings/${finding.id}`} className="btn-secondary">Back to Finding</Link>
             <button
               type="button"
               className="btn-primary"
-              onClick={handleGenerateFix}
-              disabled={genState === 'generating'}
+              onClick={createProposal}
+              disabled={pendingAction !== null || loadingFix}
             >
-              <RefreshCwIcon size={14} className={genState === 'generating' ? 'spin-icon' : ''} />
-              <span>{genState === 'generating' ? 'Generating guidance...' : currentFix ? 'Refresh AI Guidance' : 'Generate AI Guidance'}</span>
+              <RefreshCwIcon size={14} className={pendingAction === 'generate' ? 'spin-icon' : ''} />
+              <span>{pendingAction === 'generate' ? 'Generating proposal…' : fix ? 'Generate New Proposal' : 'Generate Proposal'}</span>
             </button>
-
-            {/* Step 2: Open PR Button */}
-            {currentFix?.diff && !currentFix.prNumber && prState !== 'opened' && (
-              <button
-                type="button"
-                className="btn-primary"
-                onClick={handleOpenPR}
-                disabled={prState === 'opening'}
-              >
-                <DiffIcon size={14} className={prState === 'opening' ? 'spin-icon' : ''} />
-                <span>{prState === 'opening' ? 'Creating Pull Request...' : 'Open GitHub Pull Request'}</span>
-              </button>
-            )}
-
-            {/* Step 3: PR Created Indicator */}
-            {(currentFix?.prNumber || prState === 'opened') && (
-              <span className="badge badge-success" style={{ padding: '6px 12px', fontSize: '13px' }}>
-                <CheckCircleIcon size={14} style={{ marginRight: '6px' }} />
-                PR #{currentFix?.prNumber || 42} Opened
-              </span>
-            )}
           </div>
         }
       />
 
       <div className="page-content-padded">
-        {/* Error notification if any */}
+        {loadingFix && <div className="panel-box mb-4" role="status">Loading persisted remediation history…</div>}
         {errorText && (
-          <div className="panel-box error-alert-box mb-4">
+          <div className="panel-box error-alert-box mb-4" role="alert">
             <div className="alert-top">
               <AlertTriangleIcon size={18} className="text-danger" />
-              <h3 className="alert-title">Remediation Pipeline Error</h3>
+              <h3 className="alert-title">Remediation action failed</h3>
             </div>
             <p className="alert-message">{errorText}</p>
           </div>
         )}
 
-        {/* PR Successfully Created Callout */}
-        {(currentFix?.prNumber || prState === 'opened') && (
-          <div className="pr-success-callout">
-            <div className="pr-callout-top">
-              <CheckCircleIcon size={20} className="text-success" />
-              <div>
-                <h4 className="pr-callout-title">
-                  Pull Request #{currentFix?.prNumber || 42} Successfully Created
-                </h4>
-                <p className="pr-callout-desc">
-                  A dedicated remediation branch has been opened for peer review. Code changes and AST validation certificates have been attached.
-                </p>
-              </div>
-            </div>
-            <div className="pr-meta-row text-mono">
-              <span>Target Branch: <strong className="text-primary">{repo?.defaultBranch || 'main'}</strong></span>
-              <span>Source Branch: <strong className="text-secondary">repoguard/fix-{finding.id}</strong></span>
-              <span className="text-secondary">Mock Environment URL: github.com/repoguard-org/{repo?.name}/pull/{currentFix?.prNumber || 42}</span>
+        <section className="panel-box fix-summary-panel">
+          <div className="fix-panel-header">
+            <div className="panel-headline-group">
+              <SeverityBadge severity={finding.severity} />
+              <StatusChip status={finding.status} />
+              <span className="file-badge text-mono">Scanner: {finding.scanner || 'unavailable'}</span>
+              <span className="file-badge text-mono">{finding.filePath}</span>
             </div>
           </div>
+          <p>{finding.description || finding.title}</p>
+          <p className="text-secondary">A proposal is never applied automatically. Review, approval, validation, and pull-request creation are separate recorded actions.</p>
+        </section>
+
+        {!loadingFix && !fix && (
+          <section className="panel-box mt-4">
+            <h3 className="box-title">No persisted proposal</h3>
+            <p>Generate a server-side proposal to create a reviewable, database-backed remediation record.</p>
+          </section>
         )}
 
-        <div className="fix-grid-layout">
-          {/* Main Column */}
-          <div className="fix-main-col">
-            {/* Finding Summary & Danger Context */}
-            <div className="panel-box fix-summary-panel">
-              <div className="fix-panel-header">
-                <div className="panel-headline-group">
-                  <SeverityBadge severity={finding.severity} />
-                  <StatusChip status={finding.status} />
-                  <span className="file-badge text-mono">
-                    <FileCodeIcon size={12} style={{ marginRight: '4px' }} />
-                    {finding.filePath}
-                  </span>
-                </div>
-              </div>
-
-              <div className="danger-assessment-card">
-                <div className="danger-heading">
-                  <AlertTriangleIcon size={16} className="text-danger" />
-                  <h4>Why This Exposure Is Hazardous</h4>
-                </div>
-                <p className="danger-text">
-                  {currentFix?.explanation?.whyDangerous ||
-                    'Hardcoded credentials or unpatched dependencies directly undermine repository boundary security. Committed tokens can be extracted from public mirrors or build pipelines to compromise infrastructure.'}
-                </p>
-              </div>
-
-              <div className="remediation-strategy-card">
-                <h4 className="strategy-heading">Proposed Remediation Strategy</h4>
-                <p className="strategy-text">
-                  {currentFix?.explanation?.howFixed ||
-                    'Extract raw secrets into environment variable references (`process.env` or `os.environ`), purge credential literals from source, and verify template configuration.'}
-                </p>
-              </div>
-
-              {currentFix?.source === 'api' && (
-                <div className="remediation-strategy-card" role="status">
-                  <h4 className="strategy-heading">
-                    {currentFix.guidanceSource === 'gemini' ? 'Gemini Security Guidance' : 'Rule-Based Security Guidance'}
-                  </h4>
-                  <p className="strategy-text">{currentFix.explanation.what}</p>
-                  {currentFix.explanation.rotationNote && (
-                    <p className="strategy-text">{currentFix.explanation.rotationNote}</p>
-                  )}
-                  <p className="text-xs text-secondary">
-                    Generated from the current finding at {new Date(currentFix.generatedAt).toLocaleString()}. {currentFix.guidanceSource === 'gemini' ? 'Gemini generated this guidance.' : fallbackGuidanceMessage(currentFix.guidanceFailureReason)} This endpoint returned guidance only; no patch or validation was generated.
-                  </p>
-                </div>
-              )}
-            </div>
-
-            {/* Code Diff Viewer */}
-            <div className="panel-box fix-diff-panel">
+        {fix && (
+          <>
+            <section className="panel-box mt-4">
               <div className="box-header">
-                <div className="box-title-group">
-                  <DiffIcon size={16} className="text-secondary" />
-                  <h3 className="box-title">Remediation Code Diff</h3>
-                </div>
-                <span className="diff-badge text-mono">
-                  {currentFix?.diff?.filePath || finding.filePath}
+                <h3 className="box-title">Proposal status: {formatStatus(fix.status)}</h3>
+                <span className="text-xs text-secondary">
+                  Created {fix.generatedAt ? new Date(fix.generatedAt).toLocaleString() : 'date unavailable'}
                 </span>
               </div>
-
-              {currentFix?.diff ? (
-                <DiffViewer
-                  filePath={currentFix.diff.filePath}
-                  beforeContent={currentFix.diff.beforeContent}
-                  afterContent={currentFix.diff.afterContent}
-                />
+              <div className="remediation-strategy-card">
+                <h4 className="strategy-heading">{fix.explanation.what}</h4>
+                <p><strong>Why it matters:</strong> {fix.explanation.whyDangerous}</p>
+                <p><strong>Proposed remediation:</strong> {fix.explanation.howFixed}</p>
+                <p><strong>Risk assessment:</strong> {fix.riskLevel || 'unavailable'}</p>
+                {fix.explanation.rotationRequired && <p role="note">{fix.explanation.rotationNote}</p>}
+              </div>
+              {fix.patch ? (
+                <details className="mt-4">
+                  <summary>Review proposed patch for {fix.targetFile}</summary>
+                  <pre className="text-mono" style={{ whiteSpace: 'pre-wrap', overflowX: 'auto' }}>{fix.patch}</pre>
+                </details>
               ) : (
-                <div className="diff-placeholder-card">
-                  <p>This backend endpoint returns remediation guidance only. No code patch or validation result was generated.</p>
-                  <button
-                    type="button"
-                    className="btn-primary btn-sm"
-                    onClick={handleGenerateFix}
-                    disabled={genState === 'generating'}
-                  >
-                    {genState === 'generating' ? 'Generating...' : 'Generate AI Guidance'}
+                <p className="text-secondary mt-4">No code patch was generated; only explanatory guidance is available. This suggestion has not been validated.</p>
+              )}
+            </section>
+
+            {fix.status === 'pending_review' && (
+              <section className="panel-box mt-4">
+                <h3 className="box-title">Human review</h3>
+                <label className="form-label" htmlFor="review-note">Review note (optional)</label>
+                <textarea
+                  id="review-note"
+                  className="form-input"
+                  maxLength={2000}
+                  value={reviewNote}
+                  onChange={(event) => setReviewNote(event.target.value)}
+                />
+                <div className="header-action-group mt-4">
+                  <button type="button" className="btn-primary" onClick={() => submitReview('approved')} disabled={pendingAction !== null}>
+                    {pendingAction === 'approved' ? 'Recording approval…' : 'Approve proposal'}
+                  </button>
+                  <button type="button" className="btn-secondary" onClick={() => submitReview('rejected')} disabled={pendingAction !== null}>
+                    {pendingAction === 'rejected' ? 'Recording rejection…' : 'Reject proposal'}
                   </button>
                 </div>
-              )}
-            </div>
-
-            {/* Validation & Verification Panel */}
-            <div className="panel-box validation-panel">
-              <div className="box-header">
-                <div className="box-title-group">
-                  <CheckCircleIcon size={16} className="text-success" />
-                  <h3 className="box-title">Patch Validation</h3>
-                </div>
-                <span className={`validation-status-badge ${currentFix?.validation ? 'val-pass' : 'val-pending'}`}>
-                  {currentFix?.validation ? 'PASSED VERIFICATION' : 'NOT PROVIDED'}
-                </span>
-              </div>
-
-              <div className="validation-checks-list">
-                <div className="val-check-item">
-                  <span className="check-icon">
-                    {currentFix?.validation?.secretRemoved ? (
-                      <CheckCircleIcon size={16} className="text-success" />
-                    ) : (
-                      <span className="status-dot-pending" />
-                    )}
-                  </span>
-                  <div className="check-details">
-                    <span className="check-title">Zero Matching Token Verification</span>
-                    <span className="check-desc">
-                      No patch was returned by the explanation endpoint, so a post-fix secret scan has not run.
-                    </span>
-                  </div>
-                </div>
-
-                <div className="val-check-item">
-                  <span className="check-icon">
-                    {currentFix?.validation?.syntaxOk ? (
-                      <CheckCircleIcon size={16} className="text-success" />
-                    ) : (
-                      <span className="status-dot-pending" />
-                    )}
-                  </span>
-                  <div className="check-details">
-                    <span className="check-title">Syntactic Compilation & AST Integrity</span>
-                    <span className="check-desc">
-                      No patch was returned by the explanation endpoint, so syntax validation has not run.
-                    </span>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Rotation Requirement Section */}
-            {(currentFix?.explanation?.rotationRequired || finding.rotationRequired) && (
-              <div className="panel-box fix-rotation-panel">
-                <RotationChecklist ruleId={finding.ruleId} />
-              </div>
+              </section>
             )}
-          </div>
 
-          {/* Sidebar Column: Review Tier & Pipeline Status */}
-          <div className="fix-sidebar-col">
-            <div className="panel-box tier-card">
-              <h4 className="sidebar-card-title">Review Tier Classification</h4>
-              <div className="tier-display">
-                <span className="tier-name text-mono">
-                  {currentFix?.tier === 'auto_branch' ? 'AUTO BRANCH' : 'PR REVIEW'}
-                </span>
-                <p className="tier-desc">
-                  {currentFix?.tier === 'auto_branch'
-                    ? 'A validated remediation path with high confidence, suitable for automated patch branch creation.'
-                    : 'The proposed modification involves operational variables and requires human engineer review.'}
-                </p>
-              </div>
+            {fix.reviews?.length > 0 && (
+              <section className="panel-box mt-4">
+                <h3 className="box-title">Review history</h3>
+                <ul>
+                  {fix.reviews.map((review) => (
+                    <li key={review.id}>
+                      {review.decision} by {review.reviewer_email} on {new Date(review.created_at).toLocaleString()}
+                      {review.note ? ` — ${review.note}` : ''}
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
 
-              <div className="tier-criteria-list">
-                <div className="criteria-item">
-                  <span className="criteria-bullet">▪</span>
-                  <span>Requires human code review before merge</span>
-                </div>
-                <div className="criteria-item">
-                  <span className="criteria-bullet">▪</span>
-                  <span>Continuous integration tests must execute</span>
-                </div>
-                <div className="criteria-item">
-                  <span className="criteria-bullet">▪</span>
-                  <span>Credential rotation must complete at provider</span>
-                </div>
-              </div>
-            </div>
-
-            <div className="panel-box pr-action-card">
-              <h4 className="sidebar-card-title">Pull Request Pipeline</h4>
-              <p className="pr-pipeline-desc">
-                Deploying this fix opens a clean Git branch with the AST-validated patch file and signs the commit.
-              </p>
-
-              {currentFix?.diff && (!currentFix?.prNumber && prState !== 'opened') ? (
-                <button
-                  type="button"
-                  className="btn-primary btn-block"
-                  onClick={handleOpenPR}
-                  disabled={!currentFix || prState === 'opening'}
-                >
-                  <DiffIcon size={14} />
-                  <span>{prState === 'opening' ? 'Opening PR...' : 'Open GitHub Pull Request'}</span>
+            {['approved', 'validation_failed'].includes(fix.status) && (
+              <section className="panel-box mt-4">
+                <h3 className="box-title">Disposable-checkout validation</h3>
+                <p>After approval, RepoGuard applies the candidate only in a disposable clone and reruns the relevant security scanners. Repository test commands are not executed.</p>
+                <button type="button" className="btn-primary" onClick={validateProposal} disabled={pendingAction !== null || !fix.patch}>
+                  {pendingAction === 'validate' ? 'Validating…' : 'Validate approved proposal'}
                 </button>
-              ) : currentFix?.diff ? (
-                <div className="pr-completed-box">
-                  <CheckCircleIcon size={16} className="text-success" />
-                  <span>Branch active: PR opened</span>
-                </div>
-              ) : (
-                <p className="pr-pipeline-desc">A pull request is unavailable because the explanation endpoint did not generate a code patch.</p>
-              )}
+              </section>
+            )}
 
-              <Link to={`/repositories/${finding.repoId}`} className="btn-secondary btn-block mt-3">
-                Return to Repository
-              </Link>
-            </div>
-          </div>
-        </div>
+            {validation && (
+              <section className="panel-box mt-4" aria-live="polite">
+                <div className="box-header">
+                  <h3 className="box-title">Validation results</h3>
+                  <span className={`validation-status-badge ${fix.status === 'validation_passed' ? 'val-pass' : 'val-pending'}`}>
+                    {fix.status === 'validation_passed' && validation.tests === 'not_run' ? 'Security rescan passed; tests not run' : formatStatus(fix.status)}
+                  </span>
+                </div>
+                <ul className="validation-checks-list">
+                  <li>{validation.patch_syntax || 'not_run'} — patch syntax</li>
+                  <li>{validation.target_exists === true ? 'passed' : validation.target_exists === false ? 'failed' : 'not_run'} — target file check</li>
+                  <li>{validation.syntaxOk ? 'passed' : 'failed'} — supported syntax validation</li>
+                  <li>{validation.security_rescan || 'not_run'} — security rescan</li>
+                  <li>{validation.tests || 'not_run'} — repository tests (intentionally not executed)</li>
+                </ul>
+                {validation.notes?.length > 0 && (
+                  <ul>{validation.notes.map((note, index) => <li key={`${index}-${note}`}>{note}</li>)}</ul>
+                )}
+              </section>
+            )}
+
+            {repo?.sourceType === 'local' && fix.status === 'validation_passed' && (
+              <section className="panel-box mt-4" role="status">
+                <h3 className="box-title">Local application unavailable</h3>
+                <p>The security rescan did not change the original repository. Applying this proposal is disabled until concurrent file replacement can be handled safely.</p>
+              </section>
+            )}
+
+            {repo?.sourceType === 'local' && (
+              <section className="panel-box mt-4">
+                <h3 className="box-title">Manual patch export</h3>
+                {exportStatus === null ? <p>Checking export eligibility…</p> : exportStatus.eligible ? (
+                  <>
+                    <p>Approved proposal: <span className="text-mono">{exportStatus.proposal_digest?.slice(0, 12)}</span></p>
+                    <button type="button" className="btn-secondary" onClick={downloadPatch} disabled={pendingAction !== null}>
+                      {pendingAction === 'export' ? 'Preparing patch…' : 'Download Patch'}
+                    </button>
+                  </>
+                ) : <p>Export unavailable: {exportStatus.reason}</p>}
+                {exportMessage && <p role="status">{exportMessage}</p>}
+              </section>
+            )}
+
+            {fix.status === 'validation_passed' && !fix.prUrl && repo?.sourceType !== 'local' && (
+              <section className="panel-box mt-4">
+                <h3 className="box-title">Open a review pull request</h3>
+                {prEligibility === null ? <p>Checking GitHub connection…</p> : prEligibility.eligible === true ? (
+                  <button type="button" className="btn-primary" onClick={createPullRequest} disabled={pendingAction !== null}>
+                    {pendingAction === 'open-pr' ? 'Opening pull request…' : 'Open GitHub pull request'}
+                  </button>
+                ) : <p>Pull request unavailable: {prEligibility.reason || 'GitHub authorization could not be verified.'}</p>}
+              </section>
+            )}
+
+            {fix.prUrl && (
+              <section className="panel-box mt-4" role="status">
+                <CheckCircleIcon size={18} className="text-success" />
+                <a href={fix.prUrl} target="_blank" rel="noreferrer">Pull request #{fix.prNumber} opened for review</a>
+              </section>
+            )}
+          </>
+        )}
       </div>
     </div>
   );

@@ -4,10 +4,12 @@ import hashlib
 import hmac
 import os
 import re
+from base64 import b64encode
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+from pathlib import PurePosixPath
 
 from github import Github
 
@@ -37,6 +39,14 @@ def is_valid_github_push_ref(ref: object) -> bool:
 
 
 def _git_auth_environment(token: str) -> dict[str, str]:
+    """Return one Git child-process environment with non-persistent auth.
+
+    Git for Windows executes custom credential helpers through its MSYS shell.
+    Some locked-down Windows environments prohibit that shell from creating its
+    named object, so a helper can fail before Git contacts GitHub.  A scoped
+    ``http.*.extraheader`` is handled directly by Git and has the same lifetime
+    as this child process.  It is not written to repository or global config.
+    """
     environment = dict(os.environ)
     for key in tuple(environment):
         if key.startswith("GIT_TRACE") or key in {"GIT_CURL_VERBOSE", "GIT_CONFIG_PARAMETERS"}:
@@ -46,13 +56,10 @@ def _git_auth_environment(token: str) -> dict[str, str]:
         "GIT_CONFIG_COUNT": "2",
         "GIT_CONFIG_KEY_0": "credential.helper",
         "GIT_CONFIG_VALUE_0": "",
-        "GIT_CONFIG_KEY_1": "credential.helper",
-        "GIT_CONFIG_VALUE_1": (
-            '!f() { if [ "$1" = get ]; then '
-            'printf "username=x-access-token\\npassword=%s\\n\\n" "$REPOGUARD_GIT_TOKEN"; '
-            "fi; }; f"
-        ),
-        "REPOGUARD_GIT_TOKEN": token,
+        "GIT_CONFIG_KEY_1": "http.https://github.com/.extraheader",
+        "GIT_CONFIG_VALUE_1": "AUTHORIZATION: basic " + b64encode(
+            f"x-access-token:{token}".encode("utf-8")
+        ).decode("ascii"),
     })
     return environment
 
@@ -105,23 +112,38 @@ def clone_repo(full_name: str, commit_sha: str | None = None, ref: str | None = 
         raise RuntimeError("Repository checkout failed") from None
 
 
-def create_branch(full_name: str, branch: str, base_branch: str) -> None:
+def create_branch(full_name: str, branch: str, base_branch: str, *, base_sha: str | None = None) -> None:
     repo = _github().get_repo(full_name)
     source = repo.get_branch(base_branch)
-    repo.create_git_ref(ref=f"refs/heads/{branch}", sha=source.commit.sha)
+    if base_sha is not None and source.commit.sha != base_sha:
+        raise ValueError("Base branch changed after validation")
+    target_sha = base_sha or source.commit.sha
+    if not _GIT_COMMIT_SHA.fullmatch(target_sha):
+        raise ValueError("Base commit is invalid")
+    repo.create_git_ref(ref=f"refs/heads/{branch}", sha=target_sha)
 
 
 def commit_file_changes(full_name: str, branch: str, edits: list[dict]) -> None:
     repo = _github().get_repo(full_name)
     for edit in edits:
         path, content = edit["file_path"], edit["new_content"]
+        if (
+            not isinstance(path, str)
+            or "\\" in path
+            or path.startswith("/")
+            or ":" in path
+            or not PurePosixPath(path).parts
+            or any(part in {"", ".", ".."} for part in PurePosixPath(path).parts)
+            or not isinstance(content, str)
+        ):
+            raise ValueError("Remediation edit is invalid")
         try:
             existing = repo.get_contents(path, ref=branch)
-            repo.update_file(path, f"RepoGuard remediation for {path}", content, existing.sha, branch=branch)
+            repo.update_file(path, "RepoGuard approved remediation", content, existing.sha, branch=branch)
         except Exception as exc:
-            if getattr(exc, "status", None) != 404:
-                raise
-            repo.create_file(path, f"RepoGuard remediation for {path}", content, branch=branch)
+            if getattr(exc, "status", None) == 404:
+                raise ValueError("Remediation target no longer exists") from None
+            raise
 
 
 def open_pull_request(full_name: str, branch: str, base_branch: str, title: str, body: str) -> tuple[str, int]:

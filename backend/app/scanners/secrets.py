@@ -29,6 +29,7 @@ def secret_scan_to_persistence(scan: SecretScanResult) -> list[dict]:
             "scanner": scan.source,
             "rule_id": finding.rule_id or "gitleaks-secret",
             "title": finding.description or finding.rule_id or "Secret finding",
+            "description": finding.description,
             "severity": finding.severity or "high",
             "file_path": finding.file,
             "line": finding.line or finding.start_line,

@@ -221,7 +221,7 @@ def _completed_result(findings: list[Finding]) -> SecretScanResult:
     return SecretScanResult(findings, "completed" if findings else "empty", "gitleaks")
 
 
-def scan_repository_secrets(repo_path: str | Path, include_history: bool = False) -> SecretScanResult:
+def scan_repository_secrets(repo_path: str | Path, include_history: bool = False, *, working_tree: bool = False) -> SecretScanResult:
     """Run the Gitleaks binary when available, with an explicitly labelled regex fallback."""
     repo_root = validate_scan_path(repo_path)
 
@@ -236,6 +236,8 @@ def scan_repository_secrets(repo_path: str | Path, include_history: bool = False
             gitleaks_path, "detect", "--source", str(repo_root), "--report-format", "json",
             "--report-path", str(report_path), "--exit-code", "1", "--no-banner",
         ]
+        if working_tree:
+            command.append("--no-git")
         try:
             completed = subprocess.run(
                 command,

@@ -247,6 +247,7 @@ export const Dashboard = () => {
             <div className="card">
               <div className="card-header">
                 <h3 className="card-title">Recent Security Activity</h3>
+                <Link to="/activity" className="text-link">View audit history</Link>
               </div>
               <div className="activity-timeline-list">
                 {activities.slice(0, 4).map((act) => (

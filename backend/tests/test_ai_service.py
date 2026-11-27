@@ -144,3 +144,15 @@ def test_secret_fallback_guidance_still_requires_rotation_for_critical_secret():
     assert result["requires_rotation"] is True
     assert "rotate the credential" in result["remediation"]
     assert "hardcoded credential" in result["developer_summary"]
+
+
+def test_model_guidance_echoing_detected_secret_is_redacted_before_return():
+    finding = _finding()
+    response = _model_response() | {
+        "summary": f"The detected value is {finding.secret}.",
+    }
+    with patch("app.services.ai_service.complete_json", return_value=response):
+        result = generate_security_recommendation(finding, "")
+
+    assert finding.secret not in str(result)
+    assert "[REDACTED]" in result["summary"]

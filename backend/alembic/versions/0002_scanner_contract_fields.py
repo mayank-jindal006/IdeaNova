@@ -15,17 +15,21 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column("scans", sa.Column("scanner_status", postgresql.JSONB(), nullable=True))
+    sqlite = op.get_bind().dialect.name == "sqlite"
+    json_type = sa.JSON().with_variant(postgresql.JSONB(), "postgresql")
+    text_array = sa.JSON().with_variant(postgresql.ARRAY(sa.Text()), "postgresql")
+    op.add_column("scans", sa.Column("scanner_status", json_type, nullable=True))
     op.add_column("findings", sa.Column("scanner", sa.String(), nullable=False, server_default="unknown"))
     op.add_column("findings", sa.Column("affected_versions", sa.Text(), nullable=True))
     op.add_column("findings", sa.Column("advisory_id", sa.String(), nullable=True))
-    op.add_column("findings", sa.Column("aliases", postgresql.ARRAY(sa.Text()), nullable=False, server_default="{}"))
-    op.add_column("findings", sa.Column("references", postgresql.ARRAY(sa.Text()), nullable=False, server_default="{}"))
+    op.add_column("findings", sa.Column("aliases", text_array, nullable=False, server_default="[]" if sqlite else "{}"))
+    op.add_column("findings", sa.Column("references", text_array, nullable=False, server_default="[]" if sqlite else "{}"))
     op.add_column("findings", sa.Column("cvss_score", sa.Float(), nullable=True))
-    op.alter_column("findings", "severity", existing_type=sa.Enum("critical", "high", "medium", "low", name="severity"), nullable=True)
-    op.alter_column("findings", "scanner", server_default=None)
-    op.alter_column("findings", "aliases", server_default=None)
-    op.alter_column("findings", "references", server_default=None)
+    with op.batch_alter_table("findings") as batch:
+        batch.alter_column("severity", existing_type=sa.Enum("critical", "high", "medium", "low", name="severity"), nullable=True)
+        batch.alter_column("scanner", server_default=None)
+        batch.alter_column("aliases", server_default=None)
+        batch.alter_column("references", server_default=None)
 
 
 def downgrade() -> None:

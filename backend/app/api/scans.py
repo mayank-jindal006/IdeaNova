@@ -1,3 +1,5 @@
+from typing import Literal
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -21,7 +23,25 @@ def get_scan(scan_id: int, db: Session = Depends(get_db), user: User = Depends(c
 
 
 @router.get("/{scan_id}/findings", response_model=list[FindingOut])
-def list_scan_findings(scan_id: int, limit: int = 200, db: Session = Depends(get_db), user: User = Depends(current_user)) -> list[Finding]:
+def list_scan_findings(
+    scan_id: int,
+    limit: int = 200,
+    offset: int = 0,
+    sort_by: Literal["created_at", "severity"] = "created_at",
+    sort_order: Literal["asc", "desc"] = "desc",
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> list[Finding]:
     if not db.scalar(select(Scan).join(Repo).where(Scan.id == scan_id, Repo.owner_id == user.id)):
         raise HTTPException(404, "Scan not found")
-    return db.scalars(select(Finding).where(Finding.scan_id == scan_id).order_by(desc(Finding.created_at)).limit(min(max(limit, 1), 500))).all()
+    safe_limit = min(max(limit, 1), 500)
+    safe_offset = max(offset, 0)
+    sort_column = {"created_at": Finding.created_at, "severity": Finding.severity}[sort_by]
+    sort_expression = sort_column.desc() if sort_order == "desc" else sort_column.asc()
+    return db.scalars(
+        select(Finding)
+        .where(Finding.scan_id == scan_id)
+        .order_by(sort_expression, Finding.id.desc())
+        .offset(safe_offset)
+        .limit(safe_limit)
+    ).all()

@@ -252,6 +252,27 @@ def _finding(vulnerability: dict[str, Any], dependency: Dependency) -> dict[str,
     }
 
 
+def _merge_osv_finding(primary: dict[str, Any], duplicate: dict[str, Any]) -> bool:
+    """Merge alias records for one package/version without collapsing distinct advisories."""
+    identifiers = {duplicate["rule_id"], *duplicate["aliases"]}
+    primary["aliases"] = sorted((set(primary["aliases"]) | identifiers) - {primary["rule_id"]})
+    primary["references"] = list(dict.fromkeys([*primary["references"], *duplicate["references"]]))
+    fixed_conflict = primary["fixed_version"] != duplicate["fixed_version"]
+    if fixed_conflict:
+        primary["fixed_version"] = None
+    ranges = list(dict.fromkeys(
+        value for value in (primary["affected_versions"], duplicate["affected_versions"]) if value
+    ))
+    if ranges:
+        primary["affected_versions"] = " or ".join(ranges)
+    severity_rank = {None: 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+    if severity_rank[duplicate["severity"]] > severity_rank[primary["severity"]]:
+        primary["severity"] = duplicate["severity"]
+    scores = [score for score in (primary["cvss_score"], duplicate["cvss_score"]) if score is not None]
+    primary["cvss_score"] = max(scores) if scores else None
+    return fixed_conflict
+
+
 def scan_dependencies_with_status(repo_path: str | Path) -> DependencyScanResult:
     dependencies = discover_dependencies(repo_path)
     if not dependencies:
@@ -271,6 +292,8 @@ def scan_dependencies_with_status(repo_path: str | Path) -> DependencyScanResult
     if not isinstance(results, list) or len(results) != len(dependencies):
         return DependencyScanResult([], "unavailable", "osv_invalid_response", len(dependencies))
     findings: list[dict[str, Any]] = []
+    finding_indexes: dict[tuple[str, str, str, str], int] = {}
+    conflicting_fixed_versions: set[int] = set()
     vulnerability_cache: dict[str, dict[str, Any]] = {}
     for dependency, result in zip(dependencies, results):
         if not isinstance(result, dict):
@@ -298,7 +321,41 @@ def scan_dependencies_with_status(repo_path: str | Path) -> DependencyScanResult
                 vulnerability_cache[identifier] = vulnerability
             normalized = _finding(vulnerability_cache[identifier], dependency)
             if normalized:
-                findings.append(normalized)
+                identifiers = {normalized["rule_id"], *normalized["aliases"]}
+                scope = (dependency.name, dependency.version, dependency.ecosystem)
+                matching_indexes = {
+                    finding_indexes[(*scope, item)]
+                    for item in identifiers
+                    if (*scope, item) in finding_indexes
+                }
+                if not matching_indexes:
+                    normalized["aliases"] = sorted(set(normalized["aliases"]) - {normalized["rule_id"]})
+                    finding_index = len(findings)
+                    findings.append(normalized)
+                else:
+                    finding_index = min(matching_indexes)
+                    for duplicate_index in sorted(matching_indexes - {finding_index}, reverse=True):
+                        if _merge_osv_finding(findings[finding_index], findings[duplicate_index]):
+                            conflicting_fixed_versions.add(finding_index)
+                        if duplicate_index in conflicting_fixed_versions:
+                            conflicting_fixed_versions.add(finding_index)
+                        findings.pop(duplicate_index)
+                        conflicting_fixed_versions.discard(duplicate_index)
+                        conflicting_fixed_versions = {
+                            index - 1 if index > duplicate_index else index
+                            for index in conflicting_fixed_versions
+                        }
+                        for key, index in tuple(finding_indexes.items()):
+                            if index == duplicate_index:
+                                finding_indexes[key] = finding_index
+                            elif index > duplicate_index:
+                                finding_indexes[key] = index - 1
+                    if _merge_osv_finding(findings[finding_index], normalized):
+                        conflicting_fixed_versions.add(finding_index)
+                    if finding_index in conflicting_fixed_versions:
+                        findings[finding_index]["fixed_version"] = None
+                for item in identifiers:
+                    finding_indexes[(*scope, item)] = finding_index
     return DependencyScanResult(findings, "completed" if findings else "empty", None, len(dependencies))
 
 

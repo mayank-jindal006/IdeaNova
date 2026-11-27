@@ -4,7 +4,7 @@ import enum
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import JSON, DateTime, Enum, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import JSON, CheckConstraint, DateTime, Enum, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -53,6 +53,10 @@ class FixTier(str, enum.Enum):
 
 class FixStatus(str, enum.Enum):
     generated = "generated"
+    pending_review = "pending_review"
+    approved = "approved"
+    applied = "applied"
+    validation_passed = "validation_passed"
     validation_failed = "validation_failed"
     pr_opened = "pr_opened"
     merged = "merged"
@@ -73,9 +77,14 @@ class Repo(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     owner_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     full_name: Mapped[str] = mapped_column(String, nullable=False)
+    local_path: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     default_branch: Mapped[str] = mapped_column(String, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     last_scanned_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+    @property
+    def source_type(self) -> str:
+        return "local" if self.local_path else "github"
 
 
 class User(Base):
@@ -93,6 +102,7 @@ class Scan(Base):
     trigger: Mapped[ScanTrigger] = mapped_column(Enum(ScanTrigger), nullable=False)
     ref: Mapped[Optional[str]] = mapped_column(String)
     commit_sha: Mapped[Optional[str]] = mapped_column(String)
+    requested_by_user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     status: Mapped[ScanStatus] = mapped_column(Enum(ScanStatus), nullable=False)
     scanner_status: Mapped[Optional[dict]] = mapped_column(JsonValue)
     error: Mapped[Optional[str]] = mapped_column(Text)
@@ -102,7 +112,10 @@ class Scan(Base):
 
 class Finding(Base):
     __tablename__ = "findings"
-    __table_args__ = (UniqueConstraint("repo_id", "fingerprint", name="uq_findings_repo_fingerprint"),)
+    __table_args__ = (
+        UniqueConstraint("scan_id", "fingerprint", name="uq_findings_scan_fingerprint"),
+        Index("ix_findings_repo_created_at", "repo_id", "created_at"),
+    )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     scan_id: Mapped[int] = mapped_column(ForeignKey("scans.id"), nullable=False)
     repo_id: Mapped[int] = mapped_column(ForeignKey("repos.id"), nullable=False)
@@ -110,6 +123,7 @@ class Finding(Base):
     type: Mapped[FindingType] = mapped_column(Enum(FindingType), nullable=False)
     rule_id: Mapped[str] = mapped_column(String, nullable=False)
     title: Mapped[str] = mapped_column(String, nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text)
     severity: Mapped[Optional[Severity]] = mapped_column(Enum(Severity))
     scanner: Mapped[str] = mapped_column(String, nullable=False, default="unknown")
     file_path: Mapped[Optional[str]] = mapped_column(String)
@@ -141,11 +155,83 @@ class Fix(Base):
     finding_id: Mapped[int] = mapped_column(ForeignKey("findings.id"), nullable=False)
     explanation: Mapped[dict] = mapped_column(JsonValue, nullable=False)
     edits: Mapped[list] = mapped_column(JsonValue, nullable=False)
+    patch: Mapped[Optional[str]] = mapped_column(Text)
+    target_file: Mapped[Optional[str]] = mapped_column(String)
+    base_hash: Mapped[Optional[str]] = mapped_column(String(64))
+    risk_level: Mapped[Optional[str]] = mapped_column(String)
+    model: Mapped[Optional[str]] = mapped_column(String)
     tier: Mapped[FixTier] = mapped_column(Enum(FixTier), nullable=False)
     validation: Mapped[dict] = mapped_column(JsonValue, nullable=False)
     pr_url: Mapped[Optional[str]] = mapped_column(String)
     pr_number: Mapped[Optional[int]] = mapped_column(Integer)
     status: Mapped[FixStatus] = mapped_column(Enum(FixStatus), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class FixReview(Base):
+    __tablename__ = "fix_reviews"
+    __table_args__ = (
+        CheckConstraint("decision IN ('approved', 'rejected')", name="ck_fix_reviews_decision"),
+        Index("ix_fix_reviews_fix_created_at", "fix_id", "created_at"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    fix_id: Mapped[int] = mapped_column(ForeignKey("fixes.id"), nullable=False)
+    reviewer_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    reviewer_email: Mapped[str] = mapped_column(String(320), nullable=False)
+    decision: Mapped[str] = mapped_column(String(16), nullable=False)
+    proposal_digest: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    note: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class AiRequestLog(Base):
+    __tablename__ = "ai_request_logs"
+    __table_args__ = (
+        Index("ix_ai_request_logs_finding_created_at", "finding_id", "created_at"),
+        Index("ix_ai_request_logs_user_created_at", "user_id", "created_at"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    finding_id: Mapped[Optional[int]] = mapped_column(ForeignKey("findings.id", ondelete="SET NULL"), nullable=True)
+    user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    purpose: Mapped[str] = mapped_column(String(32), nullable=False)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    model: Mapped[Optional[str]] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    failure_category: Mapped[Optional[str]] = mapped_column(String(64))
+    input_tokens: Mapped[Optional[int]] = mapped_column(Integer)
+    output_tokens: Mapped[Optional[int]] = mapped_column(Integer)
+    result: Mapped[Optional[dict]] = mapped_column(JsonValue)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class GitHubSubmissionAttempt(Base):
+    __tablename__ = "github_submission_attempts"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    fix_id: Mapped[int] = mapped_column(ForeignKey("fixes.id"), nullable=False, unique=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    repo_id: Mapped[int] = mapped_column(ForeignKey("repos.id"), nullable=False)
+    proposal_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    stage: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+    __table_args__ = (
+        Index("ix_audit_logs_user_created_at", "user_id", "created_at"),
+        Index("ix_audit_logs_repo_created_at", "repo_id", "created_at"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    actor_email: Mapped[Optional[str]] = mapped_column(String(320))
+    repo_id: Mapped[Optional[int]] = mapped_column(ForeignKey("repos.id", ondelete="SET NULL"), nullable=True)
+    finding_id: Mapped[Optional[int]] = mapped_column(ForeignKey("findings.id", ondelete="SET NULL"), nullable=True)
+    fix_id: Mapped[Optional[int]] = mapped_column(ForeignKey("fixes.id", ondelete="SET NULL"), nullable=True)
+    action: Mapped[str] = mapped_column(String(64), nullable=False)
+    details: Mapped[dict] = mapped_column(JsonValue, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 

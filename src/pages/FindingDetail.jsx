@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useRepoGuard } from '../context/useRepoGuard';
+import { securityApi } from '../services/securityApi';
 import Header from '../components/Header';
 import SeverityBadge from '../components/SeverityBadge';
 import StatusChip from '../components/StatusChip';
@@ -23,6 +24,9 @@ export const FindingDetail = () => {
   const { findingId } = useParams();
   const navigate = useNavigate();
   const { findings, repositories, markFalsePositive } = useRepoGuard();
+  const [guidance, setGuidance] = useState(null);
+  const [guidanceLoading, setGuidanceLoading] = useState(false);
+  const [guidanceError, setGuidanceError] = useState('');
 
   const [isFalsePositiveModalOpen, setIsFalsePositiveModalOpen] = useState(false);
   const [fpReason, setFpReason] = useState('test_fixture');
@@ -312,9 +316,21 @@ export const FindingDetail = () => {
               </div>
               <div className="explanation-body">
                 <p className="explanation-text">{finding.description}</p>
-                <div className="remediation-guidance">
-                  <strong>Recommended Remediation:</strong> {finding.remediationSuggestion}
-                </div>
+                <button type="button" className="btn-secondary" disabled={guidanceLoading} onClick={async () => {
+                  setGuidanceLoading(true); setGuidanceError(''); setGuidance(null);
+                  try {
+                    const response = await securityApi.explainPersistedFinding(finding.id);
+                    if (!response?.explanation || typeof response.explanation.summary !== 'string' || typeof response.explanation.remediation !== 'string') throw new Error('The explanation service returned an invalid response.');
+                    setGuidance(response.explanation);
+                  } catch (error) { setGuidanceError(error.message || 'Unable to explain this finding.'); }
+                  finally { setGuidanceLoading(false); }
+                }}>{guidanceLoading ? 'Generating explanation…' : 'Explain Finding'}</button>
+                {guidanceError && <p role="alert">{guidanceError}</p>}
+                {guidance && <div className="remediation-guidance" role="status">
+                  <strong>{guidance.guidance_source === 'gemini' ? 'Gemini guidance' : 'Rule-based fallback guidance'}</strong>
+                  <p>{guidance.summary}</p><p>{guidance.risk_assessment}</p><p>{guidance.remediation}</p>
+                  {guidance.guidance_source !== 'gemini' && <p>AI guidance was unavailable or invalid{guidance.guidance_failure_reason ? ` (${guidance.guidance_failure_reason})` : ''}.</p>}
+                </div>}
               </div>
             </div>
 
